@@ -1,0 +1,9 @@
+node_modules/
+.env
+.price-cache.json
+dist/
+*.log
+
+Stocks_Holdings_Statement_*.xlsx
+kotak_holdings.csv
+src/kotak_holdings.csv

@@ -1,0 +1,23 @@
+{
+  "name": "portfolio-analyser-bot",
+  "version": "1.0.0",
+  "description": "Indian Equity Portfolio Analysis Bot",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "dev": "ts-node src/index.ts sample_holdings.csv"
+  },
+  "dependencies": {
+    "axios": "^1.17.0",
+    "chalk": "^4.1.2",
+    "stock-nse-india": "^1.4.0",
+    "xlsx": "^0.18.5",
+    "yahoo-finance2": "^3.15.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.42",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
