@@ -71,7 +71,7 @@ Node.js / TypeScript. No database — it reads your holdings file, fetches what 
 
 Functional and in active use. Recently went through a focused bug-fixing pass (15 fixes across the price validation, risk scoring, and sector logic) after finding several issues where stale or misattributed data was producing wrong signals — bad signals from a tool like this are worse than no tool at all, so that pass mattered more than any feature addition would have.
 
-Not yet public. Will likely open up parts of this once it's further along — for now it's the working core of what's becoming a larger project.
+Open source. Part of YALGO Quant Labs — github.com/x00Qy
 
 ## Setup
 
