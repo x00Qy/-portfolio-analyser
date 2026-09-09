@@ -92,7 +92,6 @@ const HARDCODED_ALTERNATIVES: Record<string, SectorAlternative[]> = {
     { symbol: 'MARUTI', name: 'Maruti Suzuki', sector: 'Automobile', why: 'Market leader, SUV push, export growth', riskProfile: 'Low-Med', dividendYield: '1.2%' },
     { symbol: 'M&M', name: 'Mahindra & Mahindra', sector: 'Automobile', why: 'SUV specialist, farm equipment, EV push', riskProfile: 'Med', dividendYield: '0.9%' },
     { symbol: 'BAJAJ-AUTO', name: 'Bajaj Auto', sector: 'Automobile', why: 'Export king, EV scooters, premium bikes', riskProfile: 'Low-Med', dividendYield: '2.1%' },
-    { symbol: 'TATAMOTORS', name: 'Tata Motors', sector: 'Automobile', why: 'JLR turnaround, EV leadership, debt reduction', riskProfile: 'Med', dividendYield: '0.4%' },
     { symbol: 'OLECTRA', name: 'Olectra Greentech', sector: 'Automobile', why: 'Electric buses, government orders', riskProfile: 'High', dividendYield: '0%' },
     { symbol: 'JBM_AUTO', name: 'JBM Auto', sector: 'Automobile', why: 'Auto components, EV systems', riskProfile: 'Med', dividendYield: '0.3%' },
     { symbol: 'GREAVESCOT', name: 'Greaves Cotton', sector: 'Automobile', why: 'Electric mobility, Ampere EVs', riskProfile: 'Med-High', dividendYield: '1.2%' },

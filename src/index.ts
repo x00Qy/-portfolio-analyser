@@ -235,6 +235,7 @@ async function main() {
 );
   const marketData: Map<string, MarketData> = marketResult.data;
   const failed: string[] = marketResult.failed;
+  const notFoundInMaster = new Set(marketResult.notFoundInMaster);
 
   if (failed.length > 0 && marketData.size === 0) {
     console.log(chalk.yellow('  ⚠ Live API unavailable — will use statement prices where available'));
@@ -246,9 +247,11 @@ async function main() {
   let staleCount = 0;
   const noDataSymbols: string[] = [];
   const staleSymbols: string[] = [];
+  const notFoundSymbols: string[] = [];
 
   for (const h of holdings) {
     const d = marketData.get(h.symbol);
+    const bareSymbol = h.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
     if (d && d.currentPrice > 0) {
       h.currentPrice = d.currentPrice;
       h.currentValue = h.quantity * h.currentPrice;
@@ -269,13 +272,23 @@ async function main() {
       h.pnl = 0;
       h.pnlPercent = 0;
       h.priceUnavailable = true;
-      noDataSymbols.push(h.symbol.replace('.NS', '').replace('.BO', ''));
+      const displaySym = h.symbol.replace('.NS', '').replace('.BO', '');
+      if (notFoundInMaster.has(bareSymbol)) {
+        h.symbolNotFoundInMaster = true;
+        notFoundSymbols.push(displaySym);
+      } else {
+        noDataSymbols.push(displaySym);
+      }
     }
   }
 
   if (fetchedCount > 0) console.log(chalk.green(`  ✓ Live prices: ${fetchedCount}/${holdings.length} stocks`));
   if (staleCount > 0) console.log(chalk.yellow(`  ⚠ Cached (stale) prices: ${staleSymbols.join(', ')} — all live sources failed`));
   if (noDataSymbols.length > 0) console.log(chalk.red(`  ✗ No price data for: ${noDataSymbols.join(', ')}`));
+  if (notFoundSymbols.length > 0) {
+    console.log(chalk.red(`  ✗ Symbol not found in NSE instrument master: ${notFoundSymbols.join(', ')}`));
+    console.log(chalk.red(`    It may have been renamed, delisted, or affected by a corporate action — verify the current ticker.`));
+  }
 
     // PE Estimation — batch all missing PEs into one Groq call
   let peFixed = 0;

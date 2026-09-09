@@ -1,6 +1,7 @@
 node_modules/
 .env
 .price-cache.json
+.scrip-master-cache.json
 dist/
 *.log
 

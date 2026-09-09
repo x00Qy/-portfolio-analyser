@@ -8,6 +8,7 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import chalk from 'chalk';
 import { MarketData } from './marketData';
+import { lookupNseEquityToken } from './scripMaster';
 
 const BASE_URL = 'https://apiconnect.angelone.in';
 
@@ -121,38 +122,12 @@ async function getSession(
   }
 }
 
-// ─── Symbol Token Map ─────────────────────────────────────────────────────────
-// Angel One requires a numeric "token" for each symbol
-// These are the NSE tokens for common large-cap stocks
-// For unknown symbols, we search via API
-
-const KNOWN_TOKENS: Record<string, string> = {
-  RELIANCE:   '2885',
-  // TCS:        '11536',  // wrong token — falls through to searchScrip
-  // HDFCBANK:   '1333',   // wrong token — falls through to searchScrip
-  ICICIBANK:  '4963',
-  INFY:       '1594',
-  HINDUNILVR: '1394',
-  ITC:        '1660',
-  SBIN:       '3045',
-  BHARTIARTL: '10604',
-  // KOTAKBANK:  '1922',   // wrong token — falls through to searchScrip
-  LT:         '11483',
-  AXISBANK:   '5900',
-  ASIANPAINT: '236',
-  MARUTI:     '10999',
-  TITAN:      '3506',
-  WIPRO:      '3787',
-  HCLTECH:    '7229',
-  BAJFINANCE: '317',
-  NESTLEIND:  '17963',
-  ULTRACEMCO: '11532',
-  ADANIENT:   '25',
-  ADANIPORTS: '15083',
-  POWERGRID:  '14977',
-  NTPC:       '11630',
-  ONGC:       '2475',
-};
+// ─── Symbol Token Resolution ────────────────────────────────────────────────
+// Token lookup now goes through scripMaster.ts's cached bulk instrument
+// master rather than a hardcoded table or a per-symbol searchScrip call —
+// see that file for why (confirmed live: searchScrip's exact bare-symbol
+// match can never succeed, since every result comes back "-EQ" suffixed,
+// and the endpoint rate-limits after two sequential calls).
 
 const PRICE_SANITY_ANGEL: Record<string, [number, number]> = {
   KOTAKBANK: [1500, 3000], HDFCBANK: [1400, 2200],
@@ -163,46 +138,6 @@ const PRICE_SANITY_ANGEL: Record<string, [number, number]> = {
   TITAN: [2500, 5500], MARUTI: [9000, 16000],
   ASIANPAINT: [2000, 4000], LT: [3000, 6000], ITC: [200, 600],
 };
-
-async function getSymbolToken(
-  symbol: string,
-  apiKey: string,
-  jwtToken: string
-): Promise<string | null> {
-  // Check known tokens first
-  if (KNOWN_TOKENS[symbol]) return KNOWN_TOKENS[symbol];
-
-  // Search via API for unknown symbols
-  try {
-    const res = await axios.post(
-      `${BASE_URL}/rest/secure/angelbroking/order/v1/searchScrip`,
-      { exchange: 'NSE', searchscrip: symbol },
-      {
-        headers: {
-          'Authorization': `Bearer ${jwtToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-UserType': 'USER',
-          'X-SourceID': 'WEB',
-          'X-ClientLocalIP': '127.0.0.1',
-          'X-ClientPublicIP': '127.0.0.1',
-          'X-MACAddress': '00:00:00:00:00:00',
-          'X-PrivateKey': apiKey,
-        },
-        timeout: 5000,
-      }
-    );
-
-    const scrips = res.data?.data?.scrips || [];
-    // Find exact match
-    const match = scrips.find(
-      (s: any) => s.tradingsymbol === symbol && s.exch_seg === 'NSE'
-    );
-    return match?.symboltoken || null;
-  } catch {
-    return null;
-  }
-}
 
 // ─── Main Fetch Function ──────────────────────────────────────────────────────
 
@@ -217,8 +152,9 @@ export async function fetchFromAngelOne(
     const session = await getSession(apiKey, clientId, mpin, totpSecret);
     if (!session) return null;
 
-    const token = await getSymbolToken(symbol, apiKey, session.jwtToken);
-    if (!token) return null;
+    const lookup = await lookupNseEquityToken(symbol);
+    if (lookup.status !== 'found') return null;
+    const token = lookup.token;
 
     const res = await axios.post(
       `${BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
@@ -291,32 +227,51 @@ export async function fetchFromAngelOne(
 
 // ─── Batch Fetch (all holdings in one session) ────────────────────────────────
 
+export interface AngelOneBatchResult {
+  data: Map<string, MarketData>;
+  // Symbols confirmed absent from Angel One's current NSE equity instrument
+  // master — a specific signal (rename/delisting/corporate action), not the
+  // generic "couldn't fetch a price this time". Callers use this to give a
+  // precise explanation instead of a bare "no data" when every source fails.
+  notFoundInMaster: string[];
+}
+
 export async function fetchBatchFromAngelOne(
   symbols: string[],
   apiKey: string,
   clientId: string,
   mpin: string,
   totpSecret: string
-): Promise<Map<string, MarketData>> {
-  const result = new Map<string, MarketData>();
-  if (!symbols.length) return result;
+): Promise<AngelOneBatchResult> {
+  const data = new Map<string, MarketData>();
+  const notFoundInMaster: string[] = [];
+  if (!symbols.length) return { data, notFoundInMaster };
 
   try {
     const session = await getSession(apiKey, clientId, mpin, totpSecret);
     if (!session) {
       console.log(chalk.yellow('  ⚠ Angel One session failed — falling back to NSE/Groww/Yahoo'));
-      return result;
+      return { data, notFoundInMaster };
     }
 
-    // Resolve all tokens
+    // Resolve all tokens — a local map lookup after the one-time (cached)
+    // scrip master fetch, not a per-symbol network call, so this no longer
+    // risks the rate limit the old per-symbol searchScrip lookup hit.
     const tokenMap: Record<string, string> = {}; // symbol → token
     for (const sym of symbols) {
-      const token = await getSymbolToken(sym, apiKey, session.jwtToken);
-      if (token) tokenMap[sym] = token;
+      const lookup = await lookupNseEquityToken(sym);
+      if (lookup.status === 'found') {
+        tokenMap[sym] = lookup.token;
+      } else if (lookup.status === 'not_found') {
+        notFoundInMaster.push(sym);
+      }
+      // 'unavailable' (master itself failed to load): leave unresolved this
+      // run without claiming "not found" — that would be a claim about the
+      // symbol this case doesn't support, only about connectivity.
     }
 
     const tokens = Object.values(tokenMap);
-    if (!tokens.length) return result;
+    if (!tokens.length) return { data, notFoundInMaster };
 
     // Batch quote request — all tokens in one call
     console.log(chalk.gray(`    ✓ Angel One session OK — fetching ${symbols.length} symbols...`));
@@ -369,7 +324,7 @@ export async function fetchBatchFromAngelOne(
       const week52H = parseFloat(item['52weekHigh'] ?? item['52WeekHigh'] ?? item['week52High']) || 0;
       const week52L = parseFloat(item['52weekLow'] ?? item['52WeekLow'] ?? item['week52Low']) || 0;
 
-      result.set(sym, {
+      data.set(sym, {
         currentPrice: ltp,
         peRatio: null,
         pbRatio: null,
@@ -392,9 +347,9 @@ export async function fetchBatchFromAngelOne(
       });
     }
 
-    return result;
+    return { data, notFoundInMaster };
   } catch (err: any) {
     console.log(`  ⚠ Angel One batch fetch failed: ${err.message}`);
-    return result;
+    return { data, notFoundInMaster };
   }
 }

@@ -48,6 +48,11 @@ export interface MarketDataResult {
   data: Map<string, MarketData>;
   failed: string[];
   aiEstimated: number;
+  // Symbols Angel One's instrument master confirmed absent — see
+  // scripMaster.ts. A confident "renamed, delisted, or hit by a corporate
+  // action" signal, distinct from a symbol that's simply in `failed`
+  // because every source happened to fail this run.
+  notFoundInMaster: string[];
 }
 
 // Known price ranges for sanity validation (min, max in INR)
@@ -383,6 +388,13 @@ export async function fetchMarketData(
 ): Promise<MarketDataResult> {
   const data = new Map<string, MarketData>();
   const failed: string[] = [];
+  // Symbols Angel One's instrument master confirmed it doesn't have — a
+  // specific "renamed/delisted/corporate action" signal, carried through so
+  // the final failure message (if every other source also fails) can say
+  // something more useful than generic "no data". Populated even when the
+  // symbol never reaches `failed` at all — cleared of meaning at the point
+  // of use, not here.
+  const notFoundInMaster = new Set<string>();
   let aiEstimated = 0;
   let remaining = holdings; // default: all holdings need fetching
 
@@ -394,9 +406,11 @@ export async function fetchMarketData(
   if (angelApiKey && angelClientId && angelMpin && angelTotpSecret) {
     console.log(chalk.gray('        Trying Angel One SmartAPI...'));
     const symbols = holdings.map(h => cleanSymbol(h.symbol));
-    const angelData = await fetchBatchFromAngelOne(
+    const angelResult = await fetchBatchFromAngelOne(
       symbols, angelApiKey, angelClientId, angelMpin, angelTotpSecret
     );
+    const angelData = angelResult.data;
+    for (const sym of angelResult.notFoundInMaster) notFoundInMaster.add(sym);
     if (angelData.size > 0) {
       for (const h of holdings) {
         const sym = cleanSymbol(h.symbol);
@@ -417,7 +431,7 @@ export async function fetchMarketData(
         if (aiEstimated > 0) {
           console.log(chalk.magenta(`  ℹ ${aiEstimated} stock(s) used AI-estimated prices`));
         }
-        return { data, failed, aiEstimated };
+        return { data, failed, aiEstimated, notFoundInMaster: [...notFoundInMaster] };
       }
       // If some symbols missed, continue with remaining via fallback chain below
     }
@@ -557,5 +571,5 @@ export async function fetchMarketData(
     console.log(chalk.magenta(`  ℹ ${aiEstimated} stock(s) used AI-estimated prices (APIs unavailable)`));
   }
 
-  return { data, failed, aiEstimated };
+  return { data, failed, aiEstimated, notFoundInMaster: [...notFoundInMaster] };
 }
