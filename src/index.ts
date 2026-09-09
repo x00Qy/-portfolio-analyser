@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as dotenv from 'dotenv';
 import chalk from 'chalk';
 import { parseHoldingsFile, Holding } from './parser';
-import { fetchMarketData, MarketData } from './marketData';
+import { fetchMarketData, MarketData, isPriceReliable } from './marketData';
 import { analyzeRisk } from './riskAnalyzer';
 import { runProjections } from './projections';
 import { analyzeStocks, StockAnalysis } from './stockAnalyzer';
@@ -222,7 +222,7 @@ async function main() {
 
   // [2/5] Market data — Mistral added as AI price fallback in marketData.ts
   console.log(chalk.yellow('  [2/5] Fetching live market data...'));
-  console.log(chalk.gray('        (Trying: Angel One → NSE India → Groww → Yahoo → AI Estimate)'));
+  console.log(chalk.gray('        (Trying: Angel One → NSE India → Groww → Yahoo → 24h Cache → AI Estimate)'));
 
   const marketResult = await fetchMarketData(
   holdings,
@@ -243,7 +243,9 @@ async function main() {
   }
 
   let fetchedCount = 0;
+  let staleCount = 0;
   const noDataSymbols: string[] = [];
+  const staleSymbols: string[] = [];
 
   for (const h of holdings) {
     const d = marketData.get(h.symbol);
@@ -252,7 +254,15 @@ async function main() {
       h.currentValue = h.quantity * h.currentPrice;
       h.pnl = h.currentValue - h.investedValue;
       h.pnlPercent = (h.pnl / h.investedValue) * 100;
-      fetchedCount++;
+      // A cache hit is a real price, just not from this run — only show
+      // "no data" (avgCost fallback, priceUnavailable) when there truly is
+      // nothing, cached or otherwise.
+      if (d.stale) {
+        staleCount++;
+        staleSymbols.push(`${h.symbol.replace('.NS', '').replace('.BO', '')} (${d.staleAgeHours!.toFixed(1)}h old)`);
+      } else {
+        fetchedCount++;
+      }
     } else {
       h.currentPrice = h.avgCost;
       h.currentValue = h.investedValue;
@@ -264,6 +274,7 @@ async function main() {
   }
 
   if (fetchedCount > 0) console.log(chalk.green(`  ✓ Live prices: ${fetchedCount}/${holdings.length} stocks`));
+  if (staleCount > 0) console.log(chalk.yellow(`  ⚠ Cached (stale) prices: ${staleSymbols.join(', ')} — all live sources failed`));
   if (noDataSymbols.length > 0) console.log(chalk.red(`  ✗ No price data for: ${noDataSymbols.join(', ')}`));
 
     // PE Estimation — batch all missing PEs into one Groq call
@@ -347,12 +358,19 @@ async function main() {
   printRecommendations(riskMetrics, projections, stockAnalyses);
   if (insightResult) printGeminiInsights(insightResult.insight, insightResult.provider);
   if (newsAnalyses.length > 0) printNewsAnalysis(newsAnalyses, 'AI');
-  printCopyPasteLedger(holdings, stockAnalyses, riskMetrics, projections);
+  printCopyPasteLedger(holdings, stockAnalyses, riskMetrics, projections, marketData);
 
-  // Goal Planner
+  // Goal Planner — currentValue deliberately INCLUDES holdings with an
+  // unreliable price (at their best-available value), unlike every other
+  // aggregate above. Excluding them would shrink the wealth-projection
+  // starting capital and push years-to-goal/required-SIP wrong in a
+  // different, arguably worse direction than the price uncertainty itself.
+  // The coverage count is still passed through so the printed roadmap can
+  // say so rather than presenting the starting value as fully verified.
   const currentValue = holdings.reduce((s: number, h: Holding) => s + h.currentValue, 0);
+  const reliableForGoal = holdings.filter(h => isPriceReliable(h, marketData)).length;
   const totalTaxBenefit = stockAnalyses.reduce((s: number, a: StockAnalysis) => s + a.estimatedTaxBenefit, 0);
-  const goalResult = runGoalPlanner(currentValue, goalTarget, goalYears, 0, totalTaxBenefit);
+  const goalResult = runGoalPlanner(currentValue, goalTarget, goalYears, 0, totalTaxBenefit, reliableForGoal, holdings.length);
 
   // Personalized Summary — Groq → Mistral → Gemini
   console.log(chalk.yellow('  [AI] Generating personalized portfolio summary...'));

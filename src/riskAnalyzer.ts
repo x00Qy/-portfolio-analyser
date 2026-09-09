@@ -1,11 +1,14 @@
 import { Holding } from './parser';
-import { MarketData } from './marketData';
+import { MarketData, isPriceReliable } from './marketData';
+import { hasUnverifiedCostBasis } from './stockAnalyzer';
 
 export interface RiskMetrics {
   riskScore: number;
   riskLevel: string;
   diversificationScore: number;
   beta: number;
+  reliableCount: number;
+  totalCount: number;
   sectorExposure: { sector: string; weight: number; count: number }[];
   concentration: {
     topHolding: string;
@@ -17,6 +20,7 @@ export interface RiskMetrics {
   stockMetrics: {
     symbol: string;
     weight: number;
+    priceReliable: boolean;
     peRatio: number;
     aiEstimatedPE: boolean;
     vs52WeekHigh: number;
@@ -27,15 +31,28 @@ export interface RiskMetrics {
 }
 
 export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketData>): RiskMetrics {
-  const totalValue = holdings.reduce((s, h) => s + h.currentValue, 0);
+  // Concentration, sector exposure, and beta must not be computed against a
+  // total that includes fabricated currentValue (priceUnavailable holdings
+  // are priced at cost basis, AI-estimated ones may be hallucinated) — both
+  // would silently distort every weight-derived number below. totalValue is
+  // therefore the sum over RELIABLY-priced holdings only; everything sized
+  // off it (sector %, top3/top5/HHI, beta) reflects that reliable subset,
+  // not the whole portfolio. reliableCount/totalCount let the caller label
+  // this rather than presenting it as complete.
+  const reliableHoldings = holdings.filter(h => isPriceReliable(h, marketData));
+  const totalValue = reliableHoldings.reduce((s, h) => s + h.currentValue, 0);
 
-  // Sector exposure
+  // Sector exposure — count reflects every holding (a real fact regardless of
+  // price reliability); weight accumulates only from the reliable subset, so
+  // weights sum to 100% of totalValue above, not of the full portfolio.
   const sectorMap = new Map<string, { weight: number; count: number }>();
   for (const h of holdings) {
     const md = marketData.get(h.symbol);
     const sector = md?.sector || h.sector || 'Unknown';
     const existing = sectorMap.get(sector) || { weight: 0, count: 0 };
-    existing.weight += h.currentValue / totalValue;
+    if (totalValue > 0 && isPriceReliable(h, marketData)) {
+      existing.weight += h.currentValue / totalValue;
+    }
     existing.count++;
     sectorMap.set(sector, existing);
   }
@@ -44,17 +61,23 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
     .map(([sector, { weight, count }]) => ({ sector, weight, count }))
     .sort((a, b) => b.weight - a.weight);
 
-  // Concentration
-  const sortedByValue = [...holdings].sort((a, b) => b.currentValue - a.currentValue);
+  // Concentration — reliable holdings only, same reasoning as totalValue above.
+  const sortedByValue = [...reliableHoldings].sort((a, b) => b.currentValue - a.currentValue);
   const topHolding = sortedByValue[0];
-  const top3Weight = sortedByValue.slice(0, 3).reduce((s, h) => s + h.currentValue, 0) / totalValue;
-  const top5Weight = sortedByValue.slice(0, 5).reduce((s, h) => s + h.currentValue, 0) / totalValue;
-  const hhi = holdings.reduce((sum, h) => { const w = h.currentValue / totalValue; return sum + w * w; }, 0);
+  const top3Weight = totalValue > 0 ? sortedByValue.slice(0, 3).reduce((s, h) => s + h.currentValue, 0) / totalValue : 0;
+  const top5Weight = totalValue > 0 ? sortedByValue.slice(0, 5).reduce((s, h) => s + h.currentValue, 0) / totalValue : 0;
+  const hhi = totalValue > 0
+    ? reliableHoldings.reduce((sum, h) => { const w = h.currentValue / totalValue; return sum + w * w; }, 0)
+    : 0;
 
-  // Per-stock metrics
+  // Per-stock metrics — one row per holding (so the report still shows every
+  // stock), but an unreliable holding gets weight 0 rather than a number
+  // computed against a total it was excluded from — it can never register
+  // as "Overweight" off a currentValue nothing here trusts.
   const stockMetrics = holdings.map(h => {
     const md = marketData.get(h.symbol);
-    const weight = h.currentValue / totalValue;
+    const priceReliable = isPriceReliable(h, marketData);
+    const weight = (totalValue > 0 && priceReliable) ? h.currentValue / totalValue : 0;
     const peRatio = md?.peRatio || 0;
     const aiEstimatedPE = md?.aiEstimatedPE || false;
 
@@ -75,7 +98,13 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
     if (md?.aiEstimatedPrice === true) flags.push('AI Price');
     if (aiEstimatedPE) flags.push('AI PE');
     if (weight > 0.15) flags.push('Overweight');
-    if (h.pnlPercent < -25) flags.push('Deep Loss');
+    // An unverified cost basis means pnlPercent itself may not be real (see
+    // stockAnalyzer.ts) — an unverified loss must not read as a loss here,
+    // the same holding that shows HOLD/"Unverified Cost Basis" in the
+    // recommendation section two sections earlier.
+    if (hasUnverifiedCostBasis(h)) {
+      flags.push('Unverified Cost Basis');
+    } else if (h.pnlPercent < -25) flags.push('Deep Loss');
     else if (h.pnlPercent < -15) flags.push('Significant Loss');
     else if (h.pnlPercent < -5) flags.push('Moderate Loss');
     if (flags.length === 0) flags.push('Clean');
@@ -83,6 +112,7 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
     return {
       symbol: h.symbol.replace('.NS', '').replace('.BO', ''),
       weight,
+      priceReliable,
       peRatio,
       aiEstimatedPE,
       vs52WeekHigh,
@@ -95,11 +125,9 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
   const concentrationRisk = Math.min(50, hhi * 100);
   const sectorRisk = Math.min(30, (sectorExposure[0]?.weight || 0) * 30);
   const sizeRisk = holdings.length < 10 ? 10 : 0;
-  const lossRisk = holdings.filter(h => {
-  const md = marketData.get(h.symbol);
-  const priceIsReliable = md && md.aiEstimatedPrice !== true && !h.priceUnavailable;
-  return priceIsReliable && h.pnlPercent < -20;
-}).length * 3;
+  const lossRisk = holdings.filter(h =>
+    isPriceReliable(h, marketData) && !hasUnverifiedCostBasis(h) && h.pnlPercent < -20
+  ).length * 3;
   const riskScore = Math.round(Math.min(100, concentrationRisk + sectorRisk + sizeRisk + lossRisk + 5));
 
   const riskLevel = riskScore < 25 ? 'LOW'
@@ -122,10 +150,14 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
     'Real Estate': 1.20, 'Consumer Services': 1.15, 'Logistics': 1.00,
     'Utilities': 0.65, 'Textiles': 1.00, 'Conglomerate': 1.00, 'Others': 1.00,
   };
-  const estimatedBeta = holdings.reduce((sum, h) => {
-    const w = h.currentValue / totalValue;
-    return sum + w * (sectorBetaMap[h.sector] ?? 1.0);
-  }, 0);
+  // Reliable holdings only, same reasoning as totalValue — an unreliable
+  // holding's currentValue can't be trusted as an input to a weighted average.
+  const estimatedBeta = totalValue > 0
+    ? reliableHoldings.reduce((sum, h) => {
+        const w = h.currentValue / totalValue;
+        return sum + w * (sectorBetaMap[h.sector] ?? 1.0);
+      }, 0)
+    : 0;
 
   // Alerts
   const alerts: { level: string; message: string }[] = [];
@@ -140,11 +172,9 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
   if (holdings.length < 10) {
     alerts.push({ level: 'LOW', message: `Under-diversified: Only ${holdings.length} stocks — aim for 12-15 minimum` });
   }
-  const deepLosers = holdings.filter(h => {
-  const md = marketData.get(h.symbol);
-  const priceIsReliable = md && md.aiEstimatedPrice !== true && !h.priceUnavailable;
-  return priceIsReliable && h.pnlPercent < -25;
-});
+  const deepLosers = holdings.filter(h =>
+    isPriceReliable(h, marketData) && !hasUnverifiedCostBasis(h) && h.pnlPercent < -25
+  );
   if (deepLosers.length > 0) {
     alerts.push({ level: 'HIGH', message: `${deepLosers.length} stocks down >25%: ${deepLosers.map(h => h.symbol.replace('.NS', '').replace('.BO', '')).join(', ')}` });
   }
@@ -158,10 +188,12 @@ export function analyzeRisk(holdings: Holding[], marketData: Map<string, MarketD
     riskLevel,
     diversificationScore,
     beta: Math.round(estimatedBeta * 100) / 100,
+    reliableCount: reliableHoldings.length,
+    totalCount: holdings.length,
     sectorExposure,
     concentration: {
       topHolding: topHolding?.symbol.replace('.NS', '').replace('.BO', '') || '',
-      topHoldingWeight: topHolding ? topHolding.currentValue / totalValue : 0,
+      topHoldingWeight: (topHolding && totalValue > 0) ? topHolding.currentValue / totalValue : 0,
       top3Weight,
       top5Weight,
       hhi,

@@ -14,6 +14,11 @@ export interface Holding {
   pnlPercent: number;
   priceUnavailable?: boolean;
   source?: string;
+  // Set when Angel One's instrument master confirmed this symbol isn't
+  // listed under this name — a specific "renamed, delisted, or affected by
+  // a corporate action" signal, not a transient fetch failure. See
+  // scripMaster.ts.
+  symbolNotFoundInMaster?: boolean;
 }
 
 export interface ParseResult {

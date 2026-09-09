@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import axios from 'axios';
 import { Holding } from './parser';
-import { validateAndCache, nseSymbolVariants, sleep } from './priceValidator';
+import { validateAndCache, nseSymbolVariants, sleep, getCachedPrice } from './priceValidator';
 import { fetchBatchFromAngelOne } from './angelOneProvider';
 
 export interface MarketData {
@@ -36,6 +36,12 @@ export interface MarketData {
   source?: string;
   trusted?: boolean;
   warning?: string;
+  // Set when every live source failed and this price came from the 24h
+  // disk cache instead — a real, previously-fetched price, just not from
+  // this run. Deliberately NOT folded into isPriceReliable below: see that
+  // function's comment for why aggregates must stay off it regardless.
+  stale?: boolean;
+  staleAgeHours?: number;
 }
 
 export interface MarketDataResult {
@@ -62,6 +68,23 @@ const PRICE_SANITY: Record<string, [number, number]> = {
   LT:         [3000, 6000],
   ITC:        [200,  600],
 };
+
+// Single source of truth for "can this holding's currentValue/pnl be trusted
+// in an aggregate". Previously computed slightly differently (or not at all)
+// in riskAnalyzer.ts, stockAnalyzer.ts, and projections.ts — now shared so
+// there's one place to change the definition, not three to keep in sync.
+//
+// Deliberately excludes `stale` (a 24h-cache fallback) as well as
+// `aiEstimatedPrice`: a cached price is real, unlike an AI guess, but it is
+// not a price from THIS run, and every weight/HHI/concentration/beta number
+// downstream is more useful as a stable answer than one that depends on
+// what time of day the report happens to run and which cache entries have
+// aged in or out. A cache hit still upgrades the row itself — see
+// fetchStock() below — it just doesn't upgrade the aggregates.
+export function isPriceReliable(h: Holding, marketData: Map<string, MarketData>): boolean {
+  const md = marketData.get(h.symbol);
+  return !!md && md.aiEstimatedPrice !== true && !md.stale && !h.priceUnavailable;
+}
 
 const NEVER_AI_ESTIMATE = [
   'RELIANCE','TCS','INFY','HDFCBANK','ICICIBANK','KOTAKBANK',
@@ -449,6 +472,32 @@ export async function fetchMarketData(
       if (result) source = 'Yahoo';
     }
 
+    // 3.5. Last-known-good cache — a stale real price beats a hallucinated
+    // "current" one, so this runs before AI estimation, not after. Only
+    // fires when every live source above failed; does nothing for a symbol
+    // that has never once succeeded a live fetch, since there's nothing to
+    // read (see getCachedPrice's own comment).
+    if (!result) {
+      const cached = getCachedPrice(displaySym);
+      if (cached) {
+        result = {
+          currentPrice: cached.price,
+          peRatio: null, pbRatio: null, sector: '', industry: '',
+          dayHigh: 0, dayLow: 0, yearHigh: 0, yearLow: 0,
+          volume: 0, marketCap: null, change: 0, changePercent: 0,
+          beta: null, debtToEquity: null, roe: null, eps: null,
+          fiftyDayAvg: null, twoHundredDayAvg: null,
+          shortName: displaySym,
+          analystRating: null, targetPrice: null,
+          earningsGrowth: null, revenueGrowth: null, bookValue: null,
+          stale: true,
+          staleAgeHours: cached.ageHours,
+          source: `Cached (${cached.source})`,
+        };
+        source = `Cached (${cached.source})`;
+      }
+    }
+
     // 4. Groq AI — skip for large-caps
     if (!result && groqApiKey && !NEVER_AI_ESTIMATE.includes(displaySym)) {
       result = await estimatePriceWithAI(
@@ -465,7 +514,17 @@ export async function fetchMarketData(
       if (result) { source = 'AI/Mistral'; aiEstimated++; }
     }
 
-    if (result && result.currentPrice > 0) {
+    if (result && result.stale) {
+      // Deliberately skips validateAndCache(): that function re-saves the
+      // cache with fetchedAt = Date.now() for any non-AI source, which
+      // would silently reset this exact entry's age back to zero — the
+      // one thing this path exists to preserve and show honestly.
+      result.trusted = false;
+      data.set(h.symbol, result);
+      process.stdout.write(chalk.yellow(
+        `    ⚠ ${displaySym}: ₹${result.currentPrice} · ${result.staleAgeHours!.toFixed(1)}h old (cached — all live sources failed)
+`));
+    } else if (result && result.currentPrice > 0) {
       const validation = validateAndCache(displaySym, result.currentPrice, source);
       result.currentPrice = validation.price;
       result.source = validation.source;

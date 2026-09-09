@@ -5,6 +5,8 @@ const BASE_RATE = 0.13;
 
 export interface GoalPlanResult {
   currentValue: number;
+  reliableHoldingsCount: number;
+  totalHoldingsCount: number;
   targetValue: number;
   targetYears: number;
   currentCAGR: number;
@@ -102,14 +104,14 @@ function pickGoalTarget(currentValue: number, customTarget?: number): number {
   return 200000000;
 }
 
-// FIX: Simple signature matching what index.ts calls:
-// runGoalPlanner(currentValue, goalTarget, goalYears, 0, totalTaxBenefit)
 export function runGoalPlanner(
   currentValue: number,
   targetValue: number,
   years: number,
   inflation: number,
-  taxBenefit: number
+  taxBenefit: number,
+  reliableHoldingsCount: number = 0,
+  totalHoldingsCount: number = 0
 ): GoalPlanResult {
   const effectiveTarget = pickGoalTarget(currentValue, targetValue);
 
@@ -226,6 +228,8 @@ export function runGoalPlanner(
 
   return {
     currentValue,
+    reliableHoldingsCount,
+    totalHoldingsCount,
     targetValue: effectiveTarget,
     targetYears: years,
     currentCAGR: BASE_RATE,
@@ -246,6 +250,11 @@ export function printGoalPlanner(result: GoalPlanResult) {
   console.log(chalk.white('\n ◆ WEALTH ROADMAP'));
   console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
   console.log(`  Current Portfolio: ${chalk.cyan(fmt(result.currentValue))}`);
+  if (result.totalHoldingsCount > 0 && result.reliableHoldingsCount < result.totalHoldingsCount) {
+    console.log(chalk.yellow(`  ⚠ Includes ${result.totalHoldingsCount - result.reliableHoldingsCount} of ` +
+      `${result.totalHoldingsCount} holdings with no reliable price, valued at cost/last-known basis — ` +
+      `everything below is projected off this starting value`));
+  }
   console.log();
 
   console.log(chalk.gray('┌──────────┬──────────────┬──────────────┬──────────────┬──────────────┐'));

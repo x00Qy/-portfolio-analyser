@@ -1,5 +1,5 @@
 import { Holding } from './parser';
-import { MarketData } from './marketData';
+import { MarketData, isPriceReliable } from './marketData';
 import { getSectorAlternativesSync, SectorAlternative } from './sectorData';
 
 // Unvalidated magnitude heuristic, NOT a calibrated bound. It exists only to
@@ -47,15 +47,32 @@ export function analyzeStocks(
   holdings: Holding[],
   marketData: Map<string, MarketData>
 ): StockAnalysis[] {
-  const totalValue = holdings.reduce((s, h) => s + h.currentValue, 0);
+  // Same reasoning as riskAnalyzer.ts: totalValue excludes unreliable-priced
+  // holdings so their fabricated currentValue can't inflate/deflate every
+  // other holding's weight (and therefore its Overweight/TRIM eligibility).
+  const reliableHoldings = holdings.filter(h => isPriceReliable(h, marketData));
+  const totalValue = reliableHoldings.reduce((s, h) => s + h.currentValue, 0);
 
   return holdings.map(h => {
     const md = marketData.get(h.symbol);
-    const weight = h.currentValue / totalValue;
+    const priceIsReliable = isPriceReliable(h, marketData);
+    // An unreliable holding gets weight 0 rather than a number computed
+    // against a total it was excluded from — it can never register as
+    // "Overweight" off a currentValue nothing here trusts.
+    const weight = (totalValue > 0 && priceIsReliable) ? h.currentValue / totalValue : 0;
 
-    const priceIsReliable = md &&
-      md.aiEstimatedPrice !== true &&
-      !h.priceUnavailable;
+    // Broker/depository exports (Kotak, CDSL CAS, Groww, Zerodha) already
+    // carry a post-corporate-action average cost — that's what "average cost
+    // of a current holding" means for a real account. Only generic-CSV and
+    // manual entries have no such guarantee, since there's no broker behind
+    // the number verifying it.
+    const possibleUnadjustedCorporateAction = hasUnverifiedCostBasis(h);
+
+    // Both reliability axes must hold before this holding drives a concrete
+    // recommendation or a rupee figure: a live, real (non-AI) price, AND an
+    // average cost that isn't flagged as possibly stale from an unadjusted
+    // corporate action.
+    const actionable = !!priceIsReliable && !possibleUnadjustedCorporateAction;
 
     const vs52WH = (md?.yearHigh && md.yearHigh > 0 && !isNaN(md.yearHigh))
       ? ((h.currentPrice - md.yearHigh) / md.yearHigh) * 100
@@ -81,7 +98,24 @@ export function analyzeStocks(
     if (!priceIsReliable) {
       action = 'HOLD';
       confidence = 0;
-      reasoning.push('STALE/UNAVAILABLE PRICE — cannot recommend action without live data');
+      reasoning.push(
+        h.symbolNotFoundInMaster
+          ? 'SYMBOL NOT FOUND in NSE instrument master — may have been renamed, delisted, or affected by a corporate action; verify the current ticker before treating this position as priced'
+          : md?.stale
+          ? `CACHED PRICE, ${md.staleAgeHours!.toFixed(1)}h old — all live sources failed; cannot recommend action on a price that isn't from this run`
+          : 'STALE/UNAVAILABLE PRICE — cannot recommend action without live data'
+      );
+      riskLevel = 'MED';
+    } else if (possibleUnadjustedCorporateAction) {
+      action = 'HOLD';
+      confidence = 0;
+      reasoning.push(
+        `${h.pnlPercent >= 0 ? '+' : ''}${h.pnlPercent.toFixed(1)}% is large enough that an ` +
+        `unadjusted stock split or bonus issue is a plausible cause — this average cost came from ` +
+        `a generic/manual entry with no purchase date, so it cannot be checked. Treat this figure ` +
+        `as unverified before acting.`
+      );
+      flags.push('Unverified Cost Basis');
       riskLevel = 'MED';
     } else if (h.pnlPercent <= -30) {
       action = 'SELL';
@@ -132,7 +166,12 @@ export function analyzeStocks(
         trimQuantity = undefined;
       }
 
-      if (action !== 'SELL') {
+      // Gated on `actionable`: an unreliable price or an unverified cost
+      // basis already forced HOLD/confidence 0 with a "cannot recommend"
+      // reasoning above — this block must not overwrite that with a
+      // concrete share count just because the (possibly wrong) currentValue
+      // happens to compute an overweight position.
+      if (actionable && action !== 'SELL') {
         if (h.pnlPercent >= 0 && trimQuantity && trimQuantity > 0) {
           action = 'TRIM';
           confidence = 65;
@@ -150,14 +189,21 @@ export function analyzeStocks(
           reasoning.length = 0;
           reasoning.push(`Large position (${(weight * 100).toFixed(1)}%) with significant loss — exit fully`);
         }
+        reasoning.push(
+          `Weight is measured against holdings with a verified price only — this percentage ` +
+          `(and the share count above) will shift if a currently-unpriced holding starts resolving.`
+        );
       }
     }
 
-    if (!isNaN(vs52WH) && momentum === 'NEAR_HIGH' && h.pnlPercent > 5) {
+    // Gated on priceIsReliable: vs52WH/vs52WL are computed from h.currentPrice,
+    // so an AI-estimated or unavailable price must not produce a directional
+    // suggestion sitting next to a "cannot recommend action" line above.
+    if (priceIsReliable && !isNaN(vs52WH) && momentum === 'NEAR_HIGH' && h.pnlPercent > 5) {
       flags.push('Near 52W High');
       reasoning.push('Near 52-week high — limited short-term upside, consider partial exit');
     }
-    if (!isNaN(vs52WL) && momentum === 'NEAR_LOW' && h.pnlPercent < -20) {
+    if (priceIsReliable && !isNaN(vs52WL) && momentum === 'NEAR_LOW' && h.pnlPercent < -20) {
       flags.push('Near 52W Low');
       reasoning.push('Near 52-week low — potential value trap, verify fundamentals before averaging');
     }
@@ -168,7 +214,7 @@ export function analyzeStocks(
       reasoning.push(`Only stock in ${h.sector} sector — consider adding a peer for sector diversification`);
     }
 
-    const taxLossHarvest = !!priceIsReliable && h.pnlPercent < -10 && h.pnl < -5000;
+    const taxLossHarvest = actionable && h.pnlPercent < -10 && h.pnl < -5000;
     const estimatedTaxBenefit = taxLossHarvest ? Math.abs(h.pnl) * 0.15 : 0;
 
     const showAlts = action === 'SELL' || action === 'AVG_DOWN' || action === 'TRIM';

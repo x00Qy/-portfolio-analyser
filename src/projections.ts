@@ -1,8 +1,10 @@
 import { Holding } from './parser';
-import { MarketData } from './marketData';
+import { MarketData, isPriceReliable } from './marketData';
 import { RiskMetrics } from './riskAnalyzer';
 
 export interface ProjectionResult {
+  reliableCount: number;
+  totalCount: number;
   horizons: {
     months: number;
     label: string;
@@ -35,7 +37,14 @@ export function runProjections(
   marketData: Map<string, MarketData>,
   riskMetrics: RiskMetrics
 ): ProjectionResult {
-  const totalValue = holdings.reduce((s, h) => s + h.currentValue, 0);
+  // Same reasoning as riskAnalyzer.ts/stockAnalyzer.ts: a fabricated
+  // currentValue (priceUnavailable holdings priced at cost basis, or an
+  // AI-estimated one) must not size the base every bear/base/bull/percentile
+  // figure below is multiplied against. Projections therefore cover only the
+  // reliably-priced portion of the portfolio — reliableCount/totalCount let
+  // the caller label that rather than presenting it as the whole portfolio.
+  const reliableHoldings = holdings.filter(h => isPriceReliable(h, marketData));
+  const totalValue = reliableHoldings.reduce((s, h) => s + h.currentValue, 0);
 
   const baseVolatility = 0.18;
   const concentrationMultiplier = 1 + (riskMetrics.concentration.hhi * 2);
@@ -90,6 +99,8 @@ export function runProjections(
   ];
 
   return {
+    reliableCount: reliableHoldings.length,
+    totalCount: holdings.length,
     horizons: projectionHorizons,
     percentiles,
     lossProbability1Y,

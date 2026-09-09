@@ -50,6 +50,28 @@ function saveCache(cache: PriceCache): void {
 // In-memory copy for the current run
 const _cache: PriceCache = loadCache();
 
+export interface CachedPriceLookup {
+  price: number;
+  source: string;
+  ageHours: number;
+}
+
+/**
+ * Reads a cache entry directly — no validation against a newly-fetched
+ * price, because there isn't one; this is the last-resort path for when
+ * every live source failed. Returns null if nothing is cached for this
+ * symbol (a stock that has never once succeeded a live fetch has nothing
+ * here — evictStaleCache() only clears out entries that exist, it doesn't
+ * create them) or if the entry has aged past MAX_AGE_MS.
+ */
+export function getCachedPrice(symbol: string): CachedPriceLookup | null {
+  const cached = _cache[symbol];
+  if (!cached) return null;
+  const ageMs = Date.now() - cached.fetchedAt;
+  if (ageMs >= MAX_AGE_MS) return null;
+  return { price: cached.price, source: cached.source, ageHours: ageMs / 3600000 };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. OUTLIER REJECTION THRESHOLD
 // ─────────────────────────────────────────────────────────────────────────────

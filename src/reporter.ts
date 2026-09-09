@@ -2,7 +2,7 @@ import { StockAnalysis } from './stockAnalyzer';
 import { RiskMetrics } from './riskAnalyzer';
 import { ProjectionResult } from './projections';
 import { Holding } from './parser';
-import { MarketData } from './marketData';
+import { MarketData, isPriceReliable } from './marketData';
 import chalk from 'chalk';
 
 export function printBanner() {
@@ -14,25 +14,54 @@ export function printBanner() {
 }
 
 export function printPortfolioSummary(holdings: Holding[], marketData: Map<string, MarketData>) {
+  // INVESTED covers every holding — that's real, known money regardless of
+  // whether today's price fetch succeeded. CURRENT/TOTAL P&L cover only the
+  // reliably-priced subset, so they're computed and labelled separately
+  // rather than silently blending in a fabricated currentValue (cost-basis
+  // fallback, or an AI-estimated price) into a number presented as complete.
   const totalInvested = holdings.reduce((s, h) => s + h.investedValue, 0);
-  const totalCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
-  const totalPnl = totalCurrent - totalInvested;
-  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+
+  const reliableHoldings = holdings.filter(h => isPriceReliable(h, marketData));
+  const unreliableCount = holdings.length - reliableHoldings.length;
+  const reliableInvested = reliableHoldings.reduce((s, h) => s + h.investedValue, 0);
+  const totalCurrent = reliableHoldings.reduce((s, h) => s + h.currentValue, 0);
+  const totalPnl = reliableHoldings.reduce((s, h) => s + h.pnl, 0);
+  const totalPnlPct = reliableInvested > 0 ? (totalPnl / reliableInvested) * 100 : 0;
 
   const aiSymbols = holdings.filter(h => {
   const md = marketData.get(h.symbol);
   return md && md.aiEstimatedPrice === true;
 }).map(h => h.symbol.replace('.NS', '').replace('.BO', ''));
 
+  const staleEntries = holdings
+    .map(h => ({ h, md: marketData.get(h.symbol) }))
+    .filter(({ md }) => md?.stale === true);
+
+  const unreliableSymbols = holdings
+    .filter(h => !isPriceReliable(h, marketData))
+    .map(h => h.symbol.replace('.NS', '').replace('.BO', ''));
+
+  const coverageNote = holdings.length > 0
+    ? ` (${reliableHoldings.length} of ${holdings.length} holdings)`
+    : '';
+
   console.log(chalk.white('\n ◆ PORTFOLIO SUMMARY'));
   console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  console.log(`  INVESTED    ${formatCurrency(totalInvested)}`);
-  console.log(`  CURRENT     ${formatCurrency(totalCurrent)}`);
+  console.log(`  INVESTED    ${formatCurrency(totalInvested)}  (${holdings.length} holdings)`);
+  console.log(`  CURRENT     ${formatCurrency(totalCurrent)}${coverageNote}`);
   const pnlColor = totalPnl >= 0 ? chalk.green : chalk.red;
-  console.log(`  TOTAL P&L   ${pnlColor(`${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)} (${totalPnl >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)`)}`);
+  console.log(`  TOTAL P&L   ${pnlColor(`${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)} (${totalPnl >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)`)}${coverageNote}`);
   console.log(`  STOCKS      ${holdings.length}`);
   if (aiSymbols.length > 0) {
     console.log(`  AI PRICES   ${aiSymbols.length} (APIs unavailable, AI estimated)`);
+  }
+  if (staleEntries.length > 0) {
+    console.log(`  CACHED      ${staleEntries.length} (all live sources failed, showing last known price)`);
+  }
+  if (unreliableCount > 0) {
+    console.log(chalk.yellow(`  ⚠ CURRENT/TOTAL P&L above exclude ${unreliableCount} holding(s) with no reliable price` +
+      (unreliableSymbols.length > 0 ? `: ${unreliableSymbols.join(', ')}` : '') +
+      ` — see N/A rows below`));
   }
 
   // Holdings table
@@ -45,11 +74,17 @@ export function printPortfolioSummary(holdings: Holding[], marketData: Map<strin
   for (const h of sorted) {
     const md = marketData.get(h.symbol);
     const isAI = md && md.aiEstimatedPrice === true;
+    const isStale = md?.stale === true;
     const priceUnavailable = h.priceUnavailable === true;
-    const ltpStr = priceUnavailable ? 'N/A' : (isAI ? `₹${h.currentPrice.toFixed(2)}*` : `₹${h.currentPrice.toFixed(2)}`);
+    const ltpStr = priceUnavailable ? 'N/A' : (isStale ? `₹${h.currentPrice.toFixed(2)}~` : (isAI ? `₹${h.currentPrice.toFixed(2)}*` : `₹${h.currentPrice.toFixed(2)}`));
     const pnlStr = priceUnavailable ? 'N/A' : `${h.pnl >= 0 ? '+' : ''}${formatCurrency(h.pnl)}`;
     const pnlPctStr = priceUnavailable ? 'N/A' : `${h.pnlPercent >= 0 ? '+' : ''}${h.pnlPercent.toFixed(2)}%`;
-    const weightStr = `${(h.currentValue / totalCurrent * 100).toFixed(1)}%`;
+    // Weight against the reliable-only total (matches CURRENT above) — a
+    // percentage computed from a fabricated currentValue, against a total
+    // that excludes it, wouldn't mean anything trustworthy.
+    const weightStr = (isPriceReliable(h, marketData) && totalCurrent > 0)
+      ? `${(h.currentValue / totalCurrent * 100).toFixed(1)}%`
+      : 'N/A';
     console.log(chalk.gray(`│ ${h.symbol.replace('.NS', '').replace('.BO', '').padEnd(10)} │ ${h.quantity.toString().padStart(4)} │ ${formatCurrency(h.avgCost).padStart(9)} │ ${ltpStr.padStart(9)} │ ${formatCurrency(h.currentValue).padStart(11)} │ ${pnlStr.padStart(12)} │ ${weightStr.padStart(6)} │`));
     console.log(chalk.gray(`│ ${''.padEnd(10)} │ ${''.padStart(4)} │ ${''.padStart(9)} │ ${''.padStart(9)} │ ${''.padStart(11)} │ ${pnlPctStr.padStart(12)} │ ${''.padStart(6)} │`));
     console.log(chalk.gray('├────────────┼──────┼───────────┼───────────┼─────────────┼──────────────┼─────────┤'));
@@ -59,7 +94,12 @@ export function printPortfolioSummary(holdings: Holding[], marketData: Map<strin
   if (aiSymbols.length > 0) {
     console.log(chalk.yellow(`  ⚠ AI GUESS (±20% accuracy) for: ${aiSymbols.join(', ')} — real price unavailable`));
   }
-
+  if (staleEntries.length > 0) {
+    const staleList = staleEntries.map(({ h, md }) =>
+      `${h.symbol.replace('.NS', '').replace('.BO', '')} (${md!.staleAgeHours!.toFixed(1)}h old)`
+    ).join(', ');
+    console.log(chalk.yellow(`  ~ CACHED (stale) for: ${staleList} — all live sources failed, not from this run`));
+  }
 
 }
 
@@ -274,22 +314,29 @@ export function printNewsAnalysis(newsAnalyses: any[], provider?: string) {
   }
 }
 
-export function printCopyPasteLedger(holdings: Holding[], stockAnalyses: StockAnalysis[], riskMetrics: RiskMetrics, projections: ProjectionResult) {
+export function printCopyPasteLedger(holdings: Holding[], stockAnalyses: StockAnalysis[], riskMetrics: RiskMetrics, projections: ProjectionResult, marketData: Map<string, MarketData>) {
   console.log(chalk.white('\n ◆ COPY-PASTE LEDGER'));
   console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
   console.log(chalk.gray('  Quick summary for sharing or record-keeping'));
   console.log();
 
+  // Same reliable-only treatment as printPortfolioSummary — see the comment
+  // there. Kept as a separate computation here rather than passed in, since
+  // this function already takes a different set of pre-computed arguments.
   const totalInvested = holdings.reduce((s, h) => s + h.investedValue, 0);
-  const totalCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
-  const totalPnl = totalCurrent - totalInvested;
+  const reliableHoldings = holdings.filter(h => isPriceReliable(h, marketData));
+  const reliableInvested = reliableHoldings.reduce((s, h) => s + h.investedValue, 0);
+  const totalCurrent = reliableHoldings.reduce((s, h) => s + h.currentValue, 0);
+  const totalPnl = reliableHoldings.reduce((s, h) => s + h.pnl, 0);
+  const totalPnlPct = reliableInvested > 0 ? (totalPnl / reliableInvested) * 100 : 0;
+  const coverageNote = ` (${reliableHoldings.length} of ${holdings.length} holdings)`;
 
-  console.log(`  Invested:     ${formatCurrency(totalInvested)}`);
-  console.log(`  Current:      ${formatCurrency(totalCurrent)}`);
-  console.log(`  P&L:          ${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)} (${totalPnl >= 0 ? '+' : ''}${((totalPnl / totalInvested) * 100).toFixed(2)}%)`);
+  console.log(`  Invested:     ${formatCurrency(totalInvested)}  (${holdings.length} holdings)`);
+  console.log(`  Current:      ${formatCurrency(totalCurrent)}${coverageNote}`);
+  console.log(`  P&L:          ${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)} (${totalPnl >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)${coverageNote}`);
   console.log(`  Risk:         ${riskMetrics.riskLevel}`);
   console.log(`  Stocks:       ${holdings.length}`);
-  console.log(`  1Y Loss Prob: ${projections.lossProbability1Y.toFixed(1)}%`);
+  console.log(`  1Y Loss Prob: ${projections.lossProbability1Y.toFixed(1)}%  (${projections.reliableCount} of ${projections.totalCount} holdings)`);
   console.log();
   console.log(`  Actions: ${stockAnalyses.map(a => `${a.symbol}=${a.action}`).join(', ')}`);
   console.log();
@@ -338,6 +385,10 @@ export function printRiskAnalysis(riskMetrics: RiskMetrics) {
   console.log(`  Risk Score:  ${riskColor(riskBar)} ${riskScore}/100 — ${riskMetrics.riskLevel}`);
   console.log(`  Diversif:    ${chalk.green('█'.repeat(Math.min(28, Math.max(0, Math.round(riskMetrics.diversificationScore / 3.5)))) + '░'.repeat(Math.max(0, 28 - Math.round(riskMetrics.diversificationScore / 3.5))))} ${riskMetrics.diversificationScore}/100`);
   console.log(`  Beta:        ${riskMetrics.beta} (estimated — portfolio moves ${riskMetrics.beta > 1 ? 'MORE' : 'LESS'} than Nifty)`);
+  if (riskMetrics.reliableCount < riskMetrics.totalCount) {
+    console.log(chalk.yellow(`  ⚠ Beta, sector exposure, and concentration below are computed on ` +
+      `${riskMetrics.reliableCount} of ${riskMetrics.totalCount} holdings with a reliable price`));
+  }
   console.log();
 
   console.log(chalk.gray('  Sector Exposure:'));
@@ -360,8 +411,9 @@ export function printRiskAnalysis(riskMetrics: RiskMetrics) {
   console.log(chalk.gray('├──────────┼─────────┼────────┼────────┼────────┼──────────────────────────────┤'));
   for (const s of riskMetrics.stockMetrics) {
     const peStr = s.peRatio > 0 ? `${s.peRatio.toFixed(1)}${s.aiEstimatedPE ? '*' : ''}` : 'N/A';
+    const weightStr = s.priceReliable ? `${(s.weight * 100).toFixed(1)}%` : 'N/A';
     const flags = s.flags.join(', ');
-    console.log(chalk.gray(`│ ${s.symbol.padEnd(8)} │ ${(s.weight * 100).toFixed(1).padStart(5)}% │ ${peStr.padStart(6)} │ ${s.vs52WeekHigh.toFixed(1).padStart(6)}% │ ${s.vs52WeekLow.toFixed(1).padStart(6)}% │ ${flags.padEnd(28)} │`));
+    console.log(chalk.gray(`│ ${s.symbol.padEnd(8)} │ ${weightStr.padStart(6)} │ ${peStr.padStart(6)} │ ${s.vs52WeekHigh.toFixed(1).padStart(6)}% │ ${s.vs52WeekLow.toFixed(1).padStart(6)}% │ ${flags.padEnd(28)} │`));
   }
   console.log(chalk.gray('└──────────┴─────────┴────────┴────────┴────────┴──────────────────────────────┘'));
   console.log();
@@ -379,6 +431,9 @@ export function printProjections(projections: ProjectionResult) {
   console.log(chalk.white('\n ◆ FUTURE PROJECTIONS'));
   console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
   console.log(chalk.gray('  Based on log-normal projections + portfolio risk model'));
+  if (projections.reliableCount < projections.totalCount) {
+    console.log(chalk.yellow(`  ⚠ Base value covers ${projections.reliableCount} of ${projections.totalCount} holdings with a reliable price`));
+  }
   console.log();
 
   console.log(chalk.gray('┌────────────┬──────────────┬──────────────┬──────────────┬──────────────┐'));
