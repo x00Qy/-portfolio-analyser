@@ -308,7 +308,7 @@ async function main() {
   const riskMetrics = analyzeRisk(holdings, marketData);
   console.log(chalk.green(`  ✓ Risk analysis complete — Risk Level: ${riskMetrics.riskLevel}`));
 
-  console.log(chalk.yellow('  [5/5] Running Monte Carlo projections...'));
+  console.log(chalk.yellow('  [5/5] Running log-normal projections...'));
   const projections = runProjections(holdings, marketData, riskMetrics);
   console.log(chalk.green('  ✓ Projections complete'));
   console.log();

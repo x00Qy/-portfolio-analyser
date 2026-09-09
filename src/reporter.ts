@@ -441,7 +441,7 @@ export function printProjections(projections: ProjectionResult) {
   console.log(chalk.gray('└────────────┴──────────────┴──────────────┴──────────────┴──────────────┘'));
   console.log();
 
-  console.log(chalk.gray('  Monte Carlo Percentiles:'));
+  console.log(chalk.gray('  Log-Normal Percentiles:'));
   console.log(chalk.gray('┌────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐'));
   console.log(chalk.gray('│ Horizon    │  P10 (Worst) │          P25 │ P50 (Median) │          P75 │   P90 (Best) │'));
   console.log(chalk.gray('├────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤'));
