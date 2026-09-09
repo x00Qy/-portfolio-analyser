@@ -4,6 +4,7 @@ import { Holding } from './parser';
 import { NewsItem } from './newsFetcher';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+export const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 export interface GroqStockInsight {
   symbol: string;
@@ -52,7 +53,7 @@ async function callGroq(prompt: string, apiKey: string, maxTokens: number = 2048
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [
           { role: 'system', content: 'You are a seasoned Indian equity portfolio analyst. Respond ONLY with valid JSON.' },
           { role: 'user', content: prompt }
@@ -345,7 +346,7 @@ Return ONLY a JSON object with symbol as key and PE ratio as number:
 {"SYMBOL1": 24.5, "SYMBOL2": 18.2, ...}
 
 Rules:
-- Use realistic PE ratios based on June 2026 Indian market conditions
+- Use realistic PE ratios based on current (${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}) Indian market conditions
 - Banks typically 10-25, IT 20-30, FMCG 40-70, Auto 20-35, Infra 20-30
 - Return null for any stock you're unsure about
 - No explanation, just the JSON`;
@@ -357,7 +358,7 @@ Rules:
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [
           { role: 'system', content: 'You are an Indian equity analyst. Respond ONLY with valid JSON.' },
           { role: 'user', content: prompt }

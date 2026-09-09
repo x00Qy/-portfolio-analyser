@@ -9,9 +9,9 @@ import { analyzeRisk } from './riskAnalyzer';
 import { runProjections } from './projections';
 import { analyzeStocks, StockAnalysis } from './stockAnalyzer';
 import { runGoalPlanner, printGoalPlanner } from './goalPlanner';
-import { analyzeWithGemini, generatePortfolioSummary, analyzeNews, estimatePEWithAI } from './geminiAnalyzer';
-import { analyzeWithGroq, generatePortfolioSummaryWithGroq, analyzeNewsWithGroq, estimatePEWithGroq } from './groqAnalyzer';
-import { analyzeWithMistral, generatePortfolioSummaryWithMistral, analyzeNewsWithMistral, estimatePEWithMistral } from './mistralAnalyzer';
+import { analyzeWithGemini, generatePortfolioSummary, analyzeNews, estimatePEWithAI, GEMINI_MODEL } from './geminiAnalyzer';
+import { analyzeWithGroq, generatePortfolioSummaryWithGroq, analyzeNewsWithGroq, estimatePEWithGroq, GROQ_MODEL } from './groqAnalyzer';
+import { analyzeWithMistral, generatePortfolioSummaryWithMistral, analyzeNewsWithMistral, estimatePEWithMistral, MISTRAL_SMALL } from './mistralAnalyzer';
 import { fetchNewsForStocks } from './newsFetcher';
 import {
   printBanner,
@@ -45,21 +45,21 @@ const angelTotpSecret = process.env.ANGEL_TOTP_SECRET;
 async function runPortfolioInsight(holdings: Holding[], stockAnalyses: StockAnalysis[], riskMetrics: any) {
   // Primary: Gemini → Fallback 1: Groq → Fallback 2: Mistral
   if (geminiApiKey) {
-    console.log(chalk.yellow('  [AI] Running Gemini 2.5 Flash analysis...'));
+    console.log(chalk.yellow(`  [AI] Running Gemini (${GEMINI_MODEL}) analysis...`));
     const result = await analyzeWithGemini(holdings, stockAnalyses, riskMetrics, geminiApiKey);
-    if (result) { console.log(chalk.green('  ✓ Gemini analysis complete')); return { insight: result, provider: 'Gemini 2.5 Flash' }; }
+    if (result) { console.log(chalk.green('  ✓ Gemini analysis complete')); return { insight: result, provider: `Gemini – ${GEMINI_MODEL}` }; }
     console.log(chalk.yellow('  ⚠ Gemini failed — trying Groq...'));
   }
   if (groqApiKey) {
-    console.log(chalk.yellow('  [AI] Running Groq Llama 3.3 70B analysis...'));
+    console.log(chalk.yellow(`  [AI] Running Groq (${GROQ_MODEL}) analysis...`));
     const result = await analyzeWithGroq(holdings, stockAnalyses, riskMetrics, groqApiKey);
-    if (result) { console.log(chalk.green('  ✓ Groq analysis complete')); return { insight: result, provider: 'Groq Llama 3.3 70B' }; }
+    if (result) { console.log(chalk.green('  ✓ Groq analysis complete')); return { insight: result, provider: `Groq – ${GROQ_MODEL}` }; }
     console.log(chalk.yellow('  ⚠ Groq failed — trying Mistral...'));
   }
   if (mistralApiKey) {
-    console.log(chalk.yellow('  [AI] Running Mistral analysis...'));
+    console.log(chalk.yellow(`  [AI] Running Mistral (${MISTRAL_SMALL}) analysis...`));
     const result = await analyzeWithMistral(holdings, stockAnalyses, riskMetrics, mistralApiKey);
-    if (result) { console.log(chalk.green('  ✓ Mistral analysis complete')); return { insight: result, provider: 'Mistral Small' }; }
+    if (result) { console.log(chalk.green('  ✓ Mistral analysis complete')); return { insight: result, provider: `Mistral – ${MISTRAL_SMALL}` }; }
     console.log(chalk.yellow('  ⚠ Mistral also failed'));
   }
   return null;

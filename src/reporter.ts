@@ -8,7 +8,7 @@ import chalk from 'chalk';
 export function printBanner() {
   console.log(chalk.cyan('\n╔═══════════════════════════════════════════════════════════════════╗'));
   console.log(chalk.cyan('║        YALGO QUANT LABS  ⟨  Indian Equity Portfolio Bot  ⟩        ║'));
-  console.log(chalk.cyan('║                   Powered by NSE India | Groww API | Gemini AI | Groq AI | NewsAPI                      ║'));
+  console.log(chalk.cyan('║      Powered by Angel One | NSE India | Groww | Yahoo Finance | Gemini AI | Groq AI | Mistral AI | NewsAPI      ║'));
   console.log(chalk.cyan('╚═══════════════════════════════════════════════════════════════════╝'));
   console.log(chalk.gray(`  Analysis Date: ${new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n`));
 }

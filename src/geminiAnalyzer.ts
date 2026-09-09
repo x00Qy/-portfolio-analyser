@@ -3,7 +3,8 @@ import { RiskMetrics } from './riskAnalyzer';
 import { Holding } from './parser';
 import { NewsItem } from './newsFetcher';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 export interface GeminiStockInsight {
   symbol: string;

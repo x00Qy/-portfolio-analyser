@@ -4,8 +4,8 @@ import { Holding } from './parser';
 import { NewsItem } from './newsFetcher';
 
 const MISTRAL_API_URL = 'https://api.mistral.ai/v1/chat/completions';
-const MISTRAL_SMALL = 'mistral-small-latest';
-const MISTRAL_FAST  = 'open-mistral-7b';
+export const MISTRAL_SMALL = process.env.MISTRAL_MODEL || 'mistral-small-latest';
+const MISTRAL_FAST  = process.env.MISTRAL_FAST_MODEL || 'open-mistral-7b';
 
 export interface MistralStockInsight {
   symbol: string;
@@ -316,7 +316,8 @@ export async function estimatePriceWithMistral(
   apiKey: string
 ): Promise<{ currentPrice: number; peRatio: number | null; yearHigh: number; yearLow: number } | null> {
   try {
-    const prompt = `Estimate the current market price for ${companyName} (${symbol}) in the ${sector} sector as of June 2026.
+    const currentMonthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const prompt = `Estimate the current market price for ${companyName} (${symbol}) in the ${sector} sector as of ${currentMonthYear}.
 The investor's average cost is ₹${avgCost} — use ONLY as reference, not as the current price.
 
 Return ONLY JSON:

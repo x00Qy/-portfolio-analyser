@@ -74,6 +74,8 @@ function isSane(symbol: string, price: number): boolean {
   if (!range) return price > 0;
   return price >= range[0] && price <= range[1];
 }
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
+const MISTRAL_FAST_MODEL = process.env.MISTRAL_FAST_MODEL || 'open-mistral-7b';
 
 function cleanSymbol(symbol: string): string {
   return symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
@@ -213,7 +215,8 @@ async function estimatePriceWithAI(
 
   try {
     const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-    const prompt = `You are an Indian stock market data provider. Estimate the current market price and PE ratio for ${companyName} (${symbol}) in the ${sector} sector as of June 2026.
+    const currentMonthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const prompt = `You are an Indian stock market data provider. Estimate the current market price and PE ratio for ${companyName} (${symbol}) in the ${sector} sector as of ${currentMonthYear}.
 
 The investor average cost is Rs${avgCost} - use ONLY as context, NOT as the current price.
 
@@ -232,7 +235,7 @@ Be realistic for Indian large-cap stocks.`;
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [
           { role: 'system', content: 'You are an Indian stock market data provider. Respond ONLY with valid JSON.' },
           { role: 'user', content: prompt }
@@ -300,10 +303,10 @@ async function estimatePriceWithMistral(
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'open-mistral-7b',
+        model: MISTRAL_FAST_MODEL,
         messages: [
           { role: 'system', content: 'Indian stock market data provider. Respond ONLY with valid JSON.' },
-          { role: 'user', content: `Current price for ${companyName} (${symbol}) ${sector} sector June 2026. Return ONLY JSON: {"currentPrice": <number>, "peRatio": <number or null>, "yearHigh": <number>, "yearLow": <number>}` }
+          { role: 'user', content: `Current price for ${companyName} (${symbol}) ${sector} sector ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}. Return ONLY JSON: {"currentPrice": <number>, "peRatio": <number or null>, "yearHigh": <number>, "yearLow": <number>}` }
         ],
         temperature: 0.1,
         max_tokens: 256,
