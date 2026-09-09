@@ -23,15 +23,6 @@ export interface GeminiPortfolioInsight {
   stockInsights: GeminiStockInsight[];
 }
 
-export interface PortfolioSummary {
-  bigPicture: string;
-  theGood: string[];
-  theBad: string[];
-  whatThisMeans: string;
-  immediateMoves: string[];
-  bottomLine: string;
-}
-
 export interface StockNewsAnalysis {
   symbol: string;
   sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
@@ -129,7 +120,7 @@ Be direct, specific to Indian markets, and avoid generic advice. Focus on action
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 16384,
         },
       }),
       signal: controller.signal,
@@ -147,7 +138,7 @@ if (!res.ok) {
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 8192 },
+        generationConfig: { temperature: 0, maxOutputTokens: 16384 },
       }),
     }).catch(() => null);
     if (!retry?.ok) {
@@ -181,7 +172,12 @@ if (!res.ok) {
     }
 
     if (candidate.finishReason === 'MAX_TOKENS') {
-      // Response truncated — skip silently
+      // Surfaced, not swallowed: this used to fall through to a generic
+      // "Failed to parse Gemini JSON response" a few lines down, which hid
+      // the actual, diagnosable cause (the response got cut off mid-JSON,
+      // most likely because the portfolio has enough holdings that the
+      // per-stock insights ran past the token budget).
+      console.error(`Gemini response truncated at MAX_TOKENS (limit: 16384) — likely too many holdings for one response; the JSON below is probably incomplete`);
     }
     if (candidate.finishReason === 'SAFETY') {
       return null;
@@ -210,168 +206,6 @@ if (!res.ok) {
       console.error('Gemini analysis timed out after 30s');
     } else {
       console.error('Gemini analysis failed:', err.message);
-    }
-    return null;
-  }
-}
-
-export async function generatePortfolioSummary(
-  holdings: Holding[],
-  analyses: StockAnalysis[],
-  risk: RiskMetrics,
-  projections: any,
-  goalResult: any,
-  apiKey: string
-): Promise<PortfolioSummary | null> {
-  if (!apiKey || typeof apiKey !== 'string' || apiKey.length < 10) {
-    return null;
-  }
-
-  try {
-    const totalInvested = holdings.reduce((s, h) => s + h.investedValue, 0);
-    const totalCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
-    const pnlPercent = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
-
-    const winners = analyses.filter(a => a.pnlPercent > 0).sort((a, b) => b.pnlPercent - a.pnlPercent);
-    const losers = analyses.filter(a => a.pnlPercent < 0).sort((a, b) => a.pnlPercent - b.pnlPercent);
-
-    const summaryData = {
-      totalInvested: `₹${(totalInvested / 100000).toFixed(2)}L`,
-      totalCurrent: `₹${(totalCurrent / 100000).toFixed(2)}L`,
-      pnlPercent: `${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%`,
-      stockCount: holdings.length,
-      riskLevel: risk.riskLevel,
-      riskScore: risk.riskScore,
-      diversificationScore: risk.diversificationScore,
-      topHolding: risk.concentration.topHolding,
-      topHoldingWeight: `${(risk.concentration.topHoldingWeight * 100).toFixed(1)}%`,
-      top3Weight: `${(risk.concentration.top3Weight * 100).toFixed(1)}%`,
-      top5Weight: `${(risk.concentration.top5Weight * 100).toFixed(1)}%`,
-      lossProbability1Y: projections?.lossProbability1Y || 0,
-      requiredSIP: goalResult?.monthlyNeeded || null,
-      hasGoalData: !!goalResult,
-      winners: winners.map(a => ({
-        symbol: a.symbol,
-        pnlPercent: `${a.pnlPercent.toFixed(1)}%`,
-        weight: `${(a.weight * 100).toFixed(1)}%`,
-      })),
-      losers: losers.map(a => ({
-        symbol: a.symbol,
-        pnlPercent: `${a.pnlPercent.toFixed(1)}%`,
-        weight: `${(a.weight * 100).toFixed(1)}%`,
-      })),
-      sectorExposure: risk.sectorExposure.map(s => ({
-        sector: s.sector,
-        weight: `${(s.weight * 100).toFixed(1)}%`,
-        count: s.count,
-      })),
-      taxLossBenefit: analyses.reduce((s, a) => s + a.estimatedTaxBenefit, 0),
-    };
-
-    const prompt = `You are an expert Indian equity portfolio analyst. Explain this portfolio to a non-finance person in simple, clear language.
-
-PORTFOLIO DATA:
-${JSON.stringify(summaryData, null, 2)}
-
-Respond ONLY with this exact JSON structure (no markdown, no preamble):
-{
-  "bigPicture": "<2-3 sentences describing the overall portfolio health and situation>",
-  "theGood": [
-    "<bullet 1 about what's working well>",
-    "<bullet 2 about strengths>"
-  ],
-  "theBad": [
-    "<bullet 1 about problems or risks>",
-    "<bullet 2 about weaknesses>"
-  ],
-  "whatThisMeans": "<2-3 sentences explaining what this means for the investor's future wealth>",
-  "immediateMoves": [
-    "<specific actionable move 1>",
-    "<specific actionable move 2>",
-    "<specific actionable move 3>"
-  ],
-  "bottomLine": "<1-2 sentence final verdict — optimistic but realistic>"
-}
-
-IMPORTANT:
-- Use simple language a 12th grader can understand
-- Be specific to THIS portfolio — mention actual stock names and numbers
-- Don't use generic advice — every bullet must reference actual data
-- Keep it encouraging but honest
-- Maximum 5 bullets per section
-- If goal data (SIP amounts) is not available, focus on portfolio health and rebalancing instead`;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
-    const res = await fetch(GEMINI_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 2048,
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-
-        if (!res.ok) {
-      if (res.status === 429) {
-        console.log('  ⚠ Gemini rate limited — waiting 10s and retrying...');
-        await new Promise(r => setTimeout(r, 10000));
-        const retry = await fetch(GEMINI_API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 2048 },
-          }),
-        }).catch(() => null);
-        if (!retry?.ok) {
-          console.log('  ⚠ Gemini retry failed — falling back');
-          return null;
-        }
-        const retryData: any = await retry.json();
-        const retryText = retryData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        try {
-          const clean = retryText.replace(/```json|```/g, '').trim();
-          return JSON.parse(clean) as PortfolioSummary;
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }  const data: any = await res.json();
-    const candidate = data?.candidates?.[0];
-    if (!candidate) return null;
-
-    const text = candidate?.content?.parts?.[0]?.text || '';
-
-    let parsed: PortfolioSummary;
-    try {
-      const clean = text.replace(/```json|```/g, '').trim();
-      parsed = JSON.parse(clean) as PortfolioSummary;
-    } catch {
-      return null;
-    }
-
-    if (!parsed.bigPicture || !Array.isArray(parsed.theGood)) {
-      return null;
-    }
-
-    return parsed;
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      console.error('Portfolio summary timed out after 30s');
-    } else {
-      console.error('Portfolio summary generation failed:', err.message);
     }
     return null;
   }

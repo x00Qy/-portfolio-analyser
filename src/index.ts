@@ -9,9 +9,9 @@ import { analyzeRisk } from './riskAnalyzer';
 import { runProjections } from './projections';
 import { analyzeStocks, StockAnalysis } from './stockAnalyzer';
 import { runGoalPlanner, printGoalPlanner } from './goalPlanner';
-import { analyzeWithGemini, generatePortfolioSummary, analyzeNews, estimatePEWithAI, GEMINI_MODEL } from './geminiAnalyzer';
-import { analyzeWithGroq, generatePortfolioSummaryWithGroq, analyzeNewsWithGroq, estimatePEWithGroq, GROQ_MODEL } from './groqAnalyzer';
-import { analyzeWithMistral, generatePortfolioSummaryWithMistral, analyzeNewsWithMistral, estimatePEWithMistral, MISTRAL_SMALL } from './mistralAnalyzer';
+import { analyzeWithGemini, analyzeNews, estimatePEWithAI, GEMINI_MODEL } from './geminiAnalyzer';
+import { analyzeWithGroq, analyzeNewsWithGroq, estimatePEWithGroq, GROQ_MODEL } from './groqAnalyzer';
+import { analyzeWithMistral, analyzeNewsWithMistral, estimatePEWithMistral, MISTRAL_SMALL } from './mistralAnalyzer';
 import { fetchNewsForStocks } from './newsFetcher';
 import {
   printBanner,
@@ -24,7 +24,6 @@ import {
   printRecommendations,
   printGeminiInsights,
   printCopyPasteLedger,
-  printPersonalizedSummary,
   printNewsAnalysis,
 } from './reporter';
 
@@ -65,22 +64,6 @@ async function runPortfolioInsight(holdings: Holding[], stockAnalyses: StockAnal
   return null;
 }
 
-async function runPortfolioSummary(holdings: Holding[], stockAnalyses: StockAnalysis[], riskMetrics: any, projections: any, goalResult: any) {
-  // Primary: Groq → Fallback 1: Mistral → Fallback 2: Gemini
-  if (groqApiKey) {
-    const result = await generatePortfolioSummaryWithGroq(holdings, stockAnalyses, riskMetrics, projections, goalResult, groqApiKey);
-    if (result) return result;
-  }
-  if (mistralApiKey) {
-    const result = await generatePortfolioSummaryWithMistral(holdings, stockAnalyses, riskMetrics, projections, goalResult, mistralApiKey);
-    if (result) return result;
-  }
-  if (geminiApiKey) {
-    const result = await generatePortfolioSummary(holdings, stockAnalyses, riskMetrics, projections, goalResult, geminiApiKey);
-    if (result) return result;
-  }
-  return null;
-}
 async function runNewsAnalysis(symbol: string, headlines: any[]) {
   if (geminiApiKey) {
     const result = await analyzeNews(symbol, headlines, geminiApiKey);
@@ -365,7 +348,7 @@ async function main() {
   printPortfolioSummary(holdings, marketData);
   printStockAnalysis(stockAnalyses);
   printTaxLossHarvesting(stockAnalyses);
-  printRebalancingSimulator(stockAnalyses);
+  printRebalancingSimulator(stockAnalyses, holdings);
   printRiskAnalysis(riskMetrics);
   printProjections(projections);
   printRecommendations(riskMetrics, projections, stockAnalyses);
@@ -384,19 +367,6 @@ async function main() {
   const reliableForGoal = holdings.filter(h => isPriceReliable(h, marketData)).length;
   const totalTaxBenefit = stockAnalyses.reduce((s: number, a: StockAnalysis) => s + a.estimatedTaxBenefit, 0);
   const goalResult = runGoalPlanner(currentValue, goalTarget, goalYears, 0, totalTaxBenefit, reliableForGoal, holdings.length);
-
-  // Personalized Summary — Groq → Mistral → Gemini
-  console.log(chalk.yellow('  [AI] Generating personalized portfolio summary...'));
-  const portfolioSummary = await runPortfolioSummary(holdings, stockAnalyses, riskMetrics, projections, goalResult);
-
-  if (portfolioSummary) {
-    console.log(chalk.green('  ✓ Personalized summary ready'));
-    console.log();
-    printPersonalizedSummary(portfolioSummary);
-  } else {
-    console.log(chalk.yellow('  ⚠ Could not generate personalized summary — all AI providers unavailable'));
-    console.log();
-  }
 
   printGoalPlanner(goalResult);
 

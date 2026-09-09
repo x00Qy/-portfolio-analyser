@@ -24,15 +24,6 @@ export interface MistralPortfolioInsight {
   stockInsights: MistralStockInsight[];
 }
 
-export interface PortfolioSummary {
-  bigPicture: string;
-  theGood: string[];
-  theBad: string[];
-  whatThisMeans: string;
-  immediateMoves: string[];
-  bottomLine: string;
-}
-
 export interface StockNewsAnalysis {
   symbol: string;
   sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
@@ -168,73 +159,6 @@ Include ALL stocks. Be direct, specific to Indian markets.`;
     return parsed;
   } catch (err: any) {
     console.error('Mistral portfolio analysis failed:', err.message);
-    return null;
-  }
-}
-
-export async function generatePortfolioSummaryWithMistral(
-  holdings: Holding[],
-  analyses: StockAnalysis[],
-  risk: RiskMetrics,
-  projections: any,
-  goalResult: any,
-  apiKey: string
-): Promise<PortfolioSummary | null> {
-  try {
-    const totalInvested = holdings.reduce((s, h) => s + h.investedValue, 0);
-    const totalCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
-    const pnlPercent = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
-
-    const winners = analyses.filter(a => a.pnlPercent > 0).sort((a, b) => b.pnlPercent - a.pnlPercent);
-    const losers = analyses.filter(a => a.pnlPercent < 0).sort((a, b) => a.pnlPercent - b.pnlPercent);
-
-    const summaryData = {
-      totalInvested: `₹${(totalInvested / 100000).toFixed(2)}L`,
-      totalCurrent: `₹${(totalCurrent / 100000).toFixed(2)}L`,
-      pnlPercent: `${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%`,
-      stockCount: holdings.length,
-      riskLevel: risk.riskLevel,
-      diversificationScore: risk.diversificationScore,
-      topHolding: risk.concentration.topHolding,
-      topHoldingWeight: `${(risk.concentration.topHoldingWeight * 100).toFixed(1)}%`,
-      lossProbability1Y: projections?.lossProbability1Y || 0,
-      requiredSIP: goalResult?.monthlyNeeded || null,
-      winners: winners.slice(0, 5).map(a => ({ symbol: a.symbol, pnlPercent: `${a.pnlPercent.toFixed(1)}%` })),
-      losers: losers.slice(0, 5).map(a => ({ symbol: a.symbol, pnlPercent: `${a.pnlPercent.toFixed(1)}%` })),
-      taxLossBenefit: analyses.reduce((s, a) => s + a.estimatedTaxBenefit, 0),
-    };
-
-    const prompt = `Explain this Indian equity portfolio to a non-finance person in simple language. Return ONLY JSON:
-
-${JSON.stringify(summaryData, null, 2)}
-
-Return this exact structure:
-{
-  "bigPicture": "2-3 sentences on overall portfolio health",
-  "theGood": ["bullet 1", "bullet 2", "bullet 3"],
-  "theBad": ["bullet 1", "bullet 2"],
-  "whatThisMeans": "2-3 sentences on future wealth implications",
-  "immediateMoves": ["specific action 1", "specific action 2", "specific action 3"],
-  "bottomLine": "1-2 sentence final verdict"
-}
-
-Use simple language. Mention actual stock names and numbers. Max 5 bullets per section.`;
-
-    const text = await callMistral(prompt, apiKey, 2048);
-    if (!text) return null;
-
-    let parsed: PortfolioSummary;
-    try {
-      parsed = JSON.parse(text) as PortfolioSummary;
-    } catch (e: any) {
-      console.error('Failed to parse Mistral summary JSON:', e.message);
-      return null;
-    }
-
-    if (!parsed.bigPicture || !Array.isArray(parsed.theGood)) return null;
-    return parsed;
-  } catch (err: any) {
-    console.error('Mistral summary generation failed:', err.message);
     return null;
   }
 }

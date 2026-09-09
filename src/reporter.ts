@@ -167,16 +167,19 @@ export function printTaxLossHarvesting(stockAnalyses: StockAnalysis[]) {
     const loss = Math.abs(a.pnl);
     totalLoss += loss;
     totalBenefit += a.estimatedTaxBenefit;
-    console.log(chalk.gray(`│ ${a.symbol.padEnd(10)} │ ${formatCurrency(-loss).padStart(12)} │ ${formatCurrency(a.estimatedTaxBenefit).padStart(12)} │  SELL + REBUY │  After 2 days │`));
+    console.log(chalk.gray(`│ ${a.symbol.padEnd(10)} │ ${formatCurrency(-loss).padStart(12)} │ ${formatCurrency(a.estimatedTaxBenefit).padStart(12)} │  SELL + REBUY │   After T+1  │`));
   }
   console.log(chalk.gray('├────────────┼──────────────┼──────────────┼──────────────┼──────────────┤'));
   console.log(chalk.gray(`│ TOTAL      │ ${formatCurrency(-totalLoss).padStart(12)} │ ${formatCurrency(totalBenefit).padStart(12)} │              │              │`));
   console.log(chalk.gray('└────────────┴──────────────┴──────────────┴──────────────┴──────────────┘'));
-  console.log(chalk.gray('  Note: Sell and rebuy after T+2 days to maintain position while booking loss'));
-  console.log(chalk.gray('  This offsets Short Term Capital Gains (STCG) taxed at 15%'));
+  console.log(chalk.gray('  Note: Sell and rebuy after T+1 settlement to maintain position while booking loss'));
+  console.log(chalk.gray('  Assumes Short-Term Capital Gains (STCG, 20% since the July 2024 budget) throughout —'));
+  console.log(chalk.gray('  this tool has no purchase date for any holding, so it cannot tell STCG from LTCG'));
+  console.log(chalk.gray('  (12.5%, with a ₹1.25L/year exemption). If a holding is actually long-term, the real'));
+  console.log(chalk.gray('  benefit is smaller than shown here. Verify your own holding period before acting.'));
 }
 
-export function printRebalancingSimulator(stockAnalyses: StockAnalysis[]) {
+export function printRebalancingSimulator(stockAnalyses: StockAnalysis[], holdings: Holding[]) {
   const sellStocks = stockAnalyses.filter(a => a.action === 'SELL' || a.action === 'TRIM');
 
   console.log(chalk.white('\n ◆ REBALANCING SIMULATOR'));
@@ -195,20 +198,45 @@ export function printRebalancingSimulator(stockAnalyses: StockAnalysis[]) {
   let totalLoss = 0;
   console.log(chalk.gray(`  Sell/Trim these ${sellStocks.length} stocks:`));
   for (const a of sellStocks) {
-    // FIX: StockAnalysis doesn't have currentValue, calculate from currentPrice * quantity
-    const released = a.currentPrice * a.quantity;
+    // A TRIM sells only trimQuantity shares, not the whole position — using
+    // the full a.quantity here (as this used to) overstated both the cash
+    // released and the loss booked for every TRIM by the ratio of the full
+    // position to the trimmed portion.
+    const sharesInvolved = a.action === 'TRIM' ? (a.trimQuantity ?? a.quantity) : a.quantity;
+    const released = a.currentPrice * sharesInvolved;
     totalReleased += released;
-    if (a.pnl < 0) totalLoss += Math.abs(a.pnl);
-    console.log(`    ${a.action} ${a.symbol.padEnd(10)} ${a.companyName.padEnd(20)} ${a.action === 'SELL' ? 'Loss:' : 'Trim:'} ${formatCurrency(a.pnl < 0 ? -a.pnl : a.pnl)}`);
+    const pnlOnSharesInvolved = a.quantity > 0 ? (a.pnl / a.quantity) * sharesInvolved : 0;
+    if (pnlOnSharesInvolved < 0) totalLoss += Math.abs(pnlOnSharesInvolved);
+    // Labelled as P&L explicitly — this is realized profit/loss on the
+    // shares involved, not cash. Sitting a few lines above "Total released"
+    // (which is cash), an unlabelled "Trim: ₹X" read as if the two should
+    // reconcile with each other; they measure different things.
+    const pnlLabel = a.action === 'SELL' ? 'Realized loss:' : 'P&L on trim:';
+    console.log(`    ${a.action} ${a.symbol.padEnd(10)} ${a.companyName.padEnd(20)} ${pnlLabel} ${formatCurrency(pnlOnSharesInvolved < 0 ? -pnlOnSharesInvolved : pnlOnSharesInvolved)}`);
   }
-  console.log(`  Total released:   ${formatCurrency(totalReleased)}`);
-  console.log(`  Loss booked:      ${formatCurrency(totalLoss)} (offsets STCG tax)`);
+  console.log(`  Total released (cash):   ${formatCurrency(totalReleased)}`);
+  console.log(`  Loss booked:             ${formatCurrency(totalLoss)} (offsets STCG tax)`);
   console.log();
 
-  const sellSymbols = new Set(sellStocks.map(a => a.symbol));
+  // Two filters, both requested after the simulator suggested buying back
+  // into the exact sector recommendation [2] said to diversify away from:
+  // (1) never suggest a symbol already held — the pre-existing per-stock
+  // alternatives only excluded the exact stock being sold, not the rest of
+  // the portfolio; (2) never suggest the sector a holding is being trimmed
+  // FOR CONCENTRATION out of — an overweight/concentration-triggered
+  // TRIM or SELL always has all of its own alternatives in that same
+  // sector, so filtering the sector out means filtering out everything
+  // that holding contributed. That's correct, not a bug: if nothing
+  // survives, this says so rather than falling back to same-sector names.
+  const heldSymbols = new Set(holdings.map(h => h.symbol.replace('.NS', '').replace('.BO', '')));
+  const overweightSectors = new Set(
+    sellStocks.filter(a => a.flags.includes('Overweight')).map(a => a.sector)
+  );
+
   const allAlternatives = sellStocks
     .flatMap(a => a.alternatives || [])
-    .filter(alt => !sellSymbols.has(alt.symbol))
+    .filter(alt => !heldSymbols.has(alt.symbol))
+    .filter(alt => !overweightSectors.has(alt.sector))
     .filter((alt, idx, arr) => arr.findIndex(x => x.symbol === alt.symbol) === idx) // dedupe
     .slice(0, 4);
 
@@ -218,6 +246,8 @@ export function printRebalancingSimulator(stockAnalyses: StockAnalysis[]) {
     for (const alt of allAlternatives) {
       console.log(`    ${alt.symbol.padEnd(8)} ${alt.name.padEnd(20)} ${formatCurrency(alloc)} | ${alt.why}`);
     }
+  } else {
+    console.log(chalk.gray('  No redeployment alternatives to suggest — every same-sector option is either already held or in a sector being reduced for concentration.'));
   }
 }
 
@@ -340,40 +370,6 @@ export function printCopyPasteLedger(holdings: Holding[], stockAnalyses: StockAn
   console.log();
   console.log(`  Actions: ${stockAnalyses.map(a => `${a.symbol}=${a.action}`).join(', ')}`);
   console.log();
-}
-
-export function printPersonalizedSummary(summary: any) {
-  console.log(chalk.cyan('\n╔═══════════════════════════════════════════════════════════════════╗'));
-  console.log(chalk.cyan('║         ✦ YOUR PORTFOLIO STORY — AI-POWERED SUMMARY  ✦            ║'));
-  console.log(chalk.cyan('╚═══════════════════════════════════════════════════════════════════╝'));
-
-  console.log(chalk.white('\n ◆ THE BIG PICTURE'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  console.log(`  ${summary.bigPicture}`);
-
-  console.log(chalk.white('\n ◆ THE GOOD'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  for (const g of summary.theGood) console.log(`  ${chalk.green('✓')} ${g}`);
-
-  console.log(chalk.white('\n ◆ THE BAD'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  for (const b of summary.theBad) console.log(`  ${chalk.red('✗')} ${b}`);
-
-  console.log(chalk.white('\n ◆ WHAT THIS MEANS FOR YOU'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  console.log(`  ${summary.whatThisMeans}`);
-
-  console.log(chalk.white('\n ◆ YOUR IMMEDIATE MOVES'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  for (let i = 0; i < summary.immediateMoves.length; i++) {
-    console.log(`  ${i + 1}. ${String(summary.immediateMoves[i]).replace(/₹(\d+(\.\d+)?)/g, (_, n) => formatCurrency(parseFloat(n)))}`);
-  }
-
-  console.log(chalk.white('\n ◆ BOTTOM LINE'));
-  console.log(chalk.gray('──────────────────────────────────────────────────────────────────────'));
-  console.log(`  ${chalk.bold(summary.bottomLine)}`);
-
-  console.log(chalk.gray('\n═══════════════════════════════════════════════════════════════════════\n'));
 }
 
 export function printRiskAnalysis(riskMetrics: RiskMetrics) {

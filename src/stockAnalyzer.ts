@@ -11,6 +11,16 @@ import { getSectorAlternativesSync, SectorAlternative } from './sectorData';
 // this heuristic cannot distinguish from the case it's actually looking for.
 const UNVERIFIED_COST_BASIS_PNL_THRESHOLD_PCT = 70;
 
+// Short-term capital gains rate on listed equity (STT-paid), per the July
+// 2024 Union Budget — 15% before that change, 20% since. Nothing in this
+// tool's data model carries a purchase date (no parser format it reads
+// supplies one), so it cannot tell a short-term holding from a long-term
+// one (12.5% LTCG, with a ₹1.25L/year exemption) for any position. Every
+// tax-benefit figure below assumes STCG throughout — the higher rate, no
+// exemption — as the conservative case, not a computed certainty. Anywhere
+// this figure is shown states that assumption; see reporter.ts.
+const STCG_RATE_ASSUMED = 0.20;
+
 // Shared with riskAnalyzer.ts so a holding can't read HOLD/"Unverified Cost
 // Basis" in the recommendation section and "Deep Loss" in the risk table two
 // sections later — same reasoning as isPriceReliable in marketData.ts.
@@ -158,7 +168,14 @@ export function analyzeStocks(
       const targetWeight = 0.10;
 
       if (weight > targetWeight) {
-        trimQuantity = Math.floor(h.quantity * (1 - targetWeight / weight));
+        // Selling shares also shrinks total portfolio value, not just this
+        // position — the naive quantity*(1 - target/weight) formula ignores
+        // that and undershoots (e.g. 20 shares at 20% weight, target 10%,
+        // used to compute 10 shares, which actually lands at 11.1%, not
+        // 10%). Dividing by (1 - targetWeight) accounts for the shrinking
+        // denominator and hits the target weight exactly (up to integer
+        // share rounding).
+        trimQuantity = Math.floor(h.quantity * (1 - targetWeight / weight) / (1 - targetWeight));
       }
 
       // Guard: if calculated trim is 0 or negative, don't show TRIM
@@ -215,7 +232,7 @@ export function analyzeStocks(
     }
 
     const taxLossHarvest = actionable && h.pnlPercent < -10 && h.pnl < -5000;
-    const estimatedTaxBenefit = taxLossHarvest ? Math.abs(h.pnl) * 0.15 : 0;
+    const estimatedTaxBenefit = taxLossHarvest ? Math.abs(h.pnl) * STCG_RATE_ASSUMED : 0;
 
     const showAlts = action === 'SELL' || action === 'AVG_DOWN' || action === 'TRIM';
     const cleanSym = h.symbol.replace('.NS', '').replace('.BO', '');
