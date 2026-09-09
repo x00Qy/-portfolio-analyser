@@ -2,6 +2,23 @@ import { Holding } from './parser';
 import { MarketData } from './marketData';
 import { getSectorAlternativesSync, SectorAlternative } from './sectorData';
 
+// Unvalidated magnitude heuristic, NOT a calibrated bound. It exists only to
+// catch one otherwise-undetectable case: a manually-entered or generic-CSV
+// average cost that predates a stock split or bonus issue nobody adjusted for.
+// Nothing in this pipeline captures a purchase date, so there is no way to
+// check that directly — this is a tripwire, not a correction. A genuine large
+// loss or gain on a real position will also trip it; that's a false positive
+// this heuristic cannot distinguish from the case it's actually looking for.
+const UNVERIFIED_COST_BASIS_PNL_THRESHOLD_PCT = 70;
+
+// Shared with riskAnalyzer.ts so a holding can't read HOLD/"Unverified Cost
+// Basis" in the recommendation section and "Deep Loss" in the risk table two
+// sections later — same reasoning as isPriceReliable in marketData.ts.
+export function hasUnverifiedCostBasis(h: Holding): boolean {
+  const unverifiedCostBasisSource = h.source === 'custom' || h.source === 'manual';
+  return unverifiedCostBasisSource && Math.abs(h.pnlPercent) > UNVERIFIED_COST_BASIS_PNL_THRESHOLD_PCT;
+}
+
 export interface StockAnalysis {
   symbol: string;
   companyName: string;

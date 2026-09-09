@@ -187,6 +187,7 @@ async function main() {
               currentValue: qty * avgCost,
               pnl: 0,
               pnlPercent: 0,
+              source: 'manual',
             });
           }
         }

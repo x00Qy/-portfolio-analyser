@@ -13,6 +13,7 @@ export interface Holding {
   pnl: number;
   pnlPercent: number;
   priceUnavailable?: boolean;
+  source?: string;
 }
 
 export interface ParseResult {
@@ -364,6 +365,7 @@ function parseKotakPortfolioTracker(filePath: string): ParseResult {
         currentValue: currentValue > 0 ? currentValue : quantity * currentPrice,
         pnl,
         pnlPercent: investedValue > 0 ? (pnl / investedValue) * 100 : 0,
+        source: 'kotak_portfolio_tracker',
       });
     } catch (e) {
       errors.push(`Row ${i + 1}: ${e}`);
@@ -459,6 +461,7 @@ function parseCDSLCas(filePath: string): ParseResult {
       currentValue,
       pnl: pnl !== 0 ? pnl : (currentValue - investedValue),
       pnlPercent: investedValue > 0 ? ((currentValue - investedValue) / investedValue) * 100 : 0,
+      source: 'cdsl_cas',
     });
   }
 
@@ -519,6 +522,7 @@ function parseGrowwXlsx(filePath: string): ParseResult {
       currentValue,
       pnl: (closingValue || 0) - (buyValue || 0),
       pnlPercent: buyValue > 0 ? (((closingValue || 0) - buyValue) / buyValue) * 100 : 0,
+      source: 'groww_xlsx',
     });
   }
 
@@ -597,6 +601,7 @@ function parseCSV(filePath: string): ParseResult {
         currentValue: currentValue || investedValue,
         pnl: currentValue > 0 ? currentValue - investedValue : 0,
         pnlPercent: investedValue > 0 && currentValue > 0 ? ((currentValue - investedValue) / investedValue) * 100 : 0,
+        source,
       });
     } catch (e) {
       errors.push(`Row ${i + 1}: ${e}`);
