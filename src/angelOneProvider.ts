@@ -9,6 +9,7 @@ import * as crypto from 'crypto';
 import chalk from 'chalk';
 import { MarketData } from './marketData';
 import { lookupNseEquityToken } from './scripMaster';
+import { isPlausiblyUncorrupted } from './priceValidator';
 
 const BASE_URL = 'https://apiconnect.angelone.in';
 
@@ -129,15 +130,11 @@ async function getSession(
 // match can never succeed, since every result comes back "-EQ" suffixed,
 // and the endpoint rate-limits after two sequential calls).
 
-const PRICE_SANITY_ANGEL: Record<string, [number, number]> = {
-  KOTAKBANK: [1500, 3000], HDFCBANK: [1400, 2200],
-  TCS: [3000, 6000], RELIANCE: [1000, 4000],
-  INFY: [1000, 2500], ICICIBANK: [800, 1800],
-  AXISBANK: [900, 1800], SBIN: [600, 1400],
-  BHARTIARTL: [700, 2200], HINDUNILVR: [1800, 3500],
-  TITAN: [2500, 5500], MARUTI: [9000, 16000],
-  ASIANPAINT: [2000, 4000], LT: [3000, 6000], ITC: [200, 600],
-};
+// Per-stock sanity band removed — see priceValidator.ts's
+// isPlausiblyUncorrupted for the universal corruption guard that replaced
+// it. Angel One is the primary, authoritative live source; a live quote
+// from it doesn't need a hand-written plausibility opinion, and this exact
+// table was silently rejecting real prices for TCS and HDFCBANK.
 
 // ─── Main Fetch Function ──────────────────────────────────────────────────────
 
@@ -182,7 +179,7 @@ export async function fetchFromAngelOne(
     if (!fetched || !fetched.ltp) return null;
 
     const ltp = parseFloat(fetched.ltp);
-    if (ltp <= 0) return null;
+    if (!isPlausiblyUncorrupted(ltp)) return null;
 
 
     const high    = parseFloat(fetched.high)    || 0;
@@ -312,11 +309,8 @@ export async function fetchBatchFromAngelOne(
       if (!sym) continue;
 
       const ltp = parseFloat(item.ltp);
-      if (!ltp || ltp <= 0) continue;
-
-      const range = PRICE_SANITY_ANGEL[sym];
-      if (range && (ltp < range[0] || ltp > range[1])) {
-        console.log(chalk.yellow(`    ⚠ AngelOne price for ${sym} (₹${ltp}) outside expected range — skipping`));
+      if (!isPlausiblyUncorrupted(ltp)) {
+        if (ltp) console.log(chalk.yellow(`    ⚠ AngelOne price for ${sym} (₹${ltp}) failed the corruption guard — skipping`));
         continue;
       }
 

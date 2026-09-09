@@ -13,6 +13,31 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 0. UNIVERSAL CORRUPTION GUARD — replaces the old per-stock PRICE_SANITY /
+// PRICE_SANITY_ANGEL tables (deleted from marketData.ts and
+// angelOneProvider.ts respectively).
+//
+// This is an arbitrary corruption guard, NOT a calibrated bound — same
+// labelling discipline as UNVERIFIED_COST_BASIS_PNL_THRESHOLD_PCT in
+// stockAnalyzer.ts. It is deliberately set far outside any plausible real
+// NSE equity share price so it never needs updating as the market moves,
+// and it expresses no opinion about what's "normal" for any given stock —
+// it exists only to catch gross data corruption (a decimal-shift bug, a
+// garbled parse, a currency mixup), the same way a per-stock band never
+// actually could without going stale. A live quote from a regulated
+// exchange feed (Angel One, NSE, Groww, Yahoo) is trusted outright below
+// this ceiling; second-guessing it against a hand-written "plausible"
+// range was backwards trust order, and it silently rejected real prices
+// for exactly the two stocks (TCS, HDFCBANK) it was supposed to protect.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const PRICE_CORRUPTION_CEILING_RS = 2_000_000;
+
+export function isPlausiblyUncorrupted(price: number): boolean {
+  return price > 0 && price < PRICE_CORRUPTION_CEILING_RS;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1. PERSISTENT PRICE CACHE  (written to disk so it survives between runs)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -133,8 +158,10 @@ export function validateAndCache(
     }
   }
 
-  // ── 2b. Cache is stale or missing — accept new price if it passes PRICE_SANITY ──
-  // (PRICE_SANITY check is in marketData.ts isSane() — already done before this call)
+  // ── 2b. Cache is stale or missing — accept the new price ──
+  // Live-source callers already ran isPlausiblyUncorrupted() before this
+  // call; AI-estimate callers ran it plus the avgCost-proximity check. No
+  // per-stock band exists anymore for this function to defer to.
 
   // ── 2c. Price is acceptable — update cache only for real sources ──
   if (!isAI) {

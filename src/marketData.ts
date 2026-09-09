@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import axios from 'axios';
 import { Holding } from './parser';
-import { validateAndCache, nseSymbolVariants, sleep, getCachedPrice } from './priceValidator';
+import { validateAndCache, nseSymbolVariants, sleep, getCachedPrice, isPlausiblyUncorrupted } from './priceValidator';
 import { fetchBatchFromAngelOne } from './angelOneProvider';
 
 export interface MarketData {
@@ -55,25 +55,6 @@ export interface MarketDataResult {
   notFoundInMaster: string[];
 }
 
-// Known price ranges for sanity validation (min, max in INR)
-const PRICE_SANITY: Record<string, [number, number]> = {
-  KOTAKBANK:  [1500, 3000],
-  HDFCBANK:   [1400, 2200],
-  RELIANCE:   [1000, 4000],
-  TCS:        [3000, 6000],
-  INFY:       [1000, 2500],
-  ICICIBANK:  [800,  1800],
-  AXISBANK:   [900,  1800],
-  SBIN:       [600,  1400],
-  BHARTIARTL: [700,  2200],
-  HINDUNILVR: [1800, 3500],
-  TITAN:      [2500, 5500],
-  MARUTI:     [9000, 16000],
-  ASIANPAINT: [2000, 4000],
-  LT:         [3000, 6000],
-  ITC:        [200,  600],
-};
-
 // Single source of truth for "can this holding's currentValue/pnl be trusted
 // in an aggregate". Previously computed slightly differently (or not at all)
 // in riskAnalyzer.ts, stockAnalyzer.ts, and projections.ts — now shared so
@@ -97,11 +78,6 @@ const NEVER_AI_ESTIMATE = [
   'BHARTIARTL','MARUTI'
 ];
 
-function isSane(symbol: string, price: number): boolean {
-  const range = PRICE_SANITY[symbol];
-  if (!range) return price > 0;
-  return price >= range[0] && price <= range[1];
-}
 const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const MISTRAL_FAST_MODEL = process.env.MISTRAL_FAST_MODEL || 'open-mistral-7b';
 
@@ -120,9 +96,7 @@ async function fetchFromNse(nse: any, symbol: string): Promise<MarketData | null
     const trade = details.marketDeptOrderBook?.tradeInfo || {};
 
     const price = p.lastPrice || p.close || 0;
-    if (price <= 0) return null;
-
-    if (!isSane(sym, price)) return null;
+    if (!isPlausiblyUncorrupted(price)) return null;
 
     const yearHigh = parseFloat(meta.high52) || p.weekHighLow?.max || 0;
     const yearLow = parseFloat(meta.low52) || p.weekHighLow?.min || 0;
@@ -165,8 +139,7 @@ async function fetchFromGroww(symbol: string): Promise<MarketData | null> {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
     });
     const d = res.data;
-    if (!d?.ltp || d.ltp <= 0) return null;
-    if (!isSane(sym, d.ltp)) return null;
+    if (!d?.ltp || !isPlausiblyUncorrupted(d.ltp)) return null;
 
     return {
       currentPrice: d.ltp,
@@ -204,8 +177,7 @@ async function fetchFromYahoo(symbol: string): Promise<MarketData | null> {
       },
     });
     const meta = res.data?.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice || meta.regularMarketPrice <= 0) return null;
-    if (!isSane(sym, meta.regularMarketPrice)) return null;
+    if (!meta?.regularMarketPrice || !isPlausiblyUncorrupted(meta.regularMarketPrice)) return null;
 
     return {
       currentPrice: meta.regularMarketPrice,
@@ -285,10 +257,14 @@ Be realistic for Indian large-cap stocks.`;
 
     if (typeof parsed.currentPrice !== 'number' || parsed.currentPrice <= 0) return null;
 
-    // Accept if within known sanity range OR within 50% of avgCost
-    const sane = isSane(symbol, parsed.currentPrice);
+    // Must be within 50% of what the investor actually paid — the only
+    // plausibility signal available with no fresh cached real price to
+    // compare against. This used to be OR'd with a per-stock sanity band
+    // that was vacuous for every symbol actually reaching this code path
+    // (see priceValidator.ts); it's now the sole, unconditional gate, plus
+    // the universal corruption guard applied everywhere else too.
     const diffOk = Math.abs(parsed.currentPrice - avgCost) / avgCost <= 0.50;
-    if (!sane && !diffOk) return null;
+    if (!diffOk || !isPlausiblyUncorrupted(parsed.currentPrice)) return null;
 
     const yearHigh = parsed.yearHigh > 0 ? parsed.yearHigh : Math.round(parsed.currentPrice * 1.3);
     const yearLow  = parsed.yearLow  > 0 ? parsed.yearLow  : Math.round(parsed.currentPrice * 0.75);
@@ -350,9 +326,10 @@ async function estimatePriceWithMistral(
 
     if (typeof parsed.currentPrice !== 'number' || parsed.currentPrice <= 0) return null;
 
-    const sane = isSane(symbol, parsed.currentPrice);
+    // Same reasoning as estimatePriceWithAI above — an unconditional gate,
+    // not the old OR against a per-stock band that never fired.
     const diffOk = Math.abs(parsed.currentPrice - avgCost) / avgCost <= 0.50;
-    if (!sane && !diffOk) return null;
+    if (!diffOk || !isPlausiblyUncorrupted(parsed.currentPrice)) return null;
 
     const yearHigh = parsed.yearHigh > 0 ? parsed.yearHigh : Math.round(parsed.currentPrice * 1.3);
     const yearLow  = parsed.yearLow  > 0 ? parsed.yearLow  : Math.round(parsed.currentPrice * 0.75);
