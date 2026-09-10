@@ -71,7 +71,7 @@ export function printPortfolioSummary(holdings: Holding[], marketData: Map<strin
   console.log(chalk.gray('├────────────┼──────┼───────────┼───────────┼─────────────┼──────────────┼─────────┤'));
 
   const sorted = [...holdings].sort((a, b) => b.currentValue - a.currentValue);
-  for (const h of sorted) {
+  sorted.forEach((h, idx) => {
     const md = marketData.get(h.symbol);
     const isAI = md && md.aiEstimatedPrice === true;
     const isStale = md?.stale === true;
@@ -85,10 +85,12 @@ export function printPortfolioSummary(holdings: Holding[], marketData: Map<strin
     const weightStr = (isPriceReliable(h, marketData) && totalCurrent > 0)
       ? `${(h.currentValue / totalCurrent * 100).toFixed(1)}%`
       : 'N/A';
-    console.log(chalk.gray(`│ ${h.symbol.replace('.NS', '').replace('.BO', '').padEnd(10)} │ ${h.quantity.toString().padStart(4)} │ ${formatCurrency(h.avgCost).padStart(9)} │ ${ltpStr.padStart(9)} │ ${formatCurrency(h.currentValue).padStart(11)} │ ${pnlStr.padStart(12)} │ ${weightStr.padStart(6)} │`));
-    console.log(chalk.gray(`│ ${''.padEnd(10)} │ ${''.padStart(4)} │ ${''.padStart(9)} │ ${''.padStart(9)} │ ${''.padStart(11)} │ ${pnlPctStr.padStart(12)} │ ${''.padStart(6)} │`));
-    console.log(chalk.gray('├────────────┼──────┼───────────┼───────────┼─────────────┼──────────────┼─────────┤'));
-  }
+    console.log(chalk.gray(`│ ${h.symbol.replace('.NS', '').replace('.BO', '').padEnd(10)} │ ${h.quantity.toString().padStart(4)} │ ${formatCurrency(h.avgCost).padStart(9)} │ ${ltpStr.padStart(9)} │ ${formatCurrency(h.currentValue).padStart(11)} │ ${pnlStr.padStart(12)} │ ${weightStr.padStart(7)} │`));
+    console.log(chalk.gray(`│ ${''.padEnd(10)} │ ${''.padStart(4)} │ ${''.padStart(9)} │ ${''.padStart(9)} │ ${''.padStart(11)} │ ${pnlPctStr.padStart(12)} │ ${''.padStart(7)} │`));
+    if (idx < sorted.length - 1) {
+      console.log(chalk.gray('├────────────┼──────┼───────────┼───────────┼─────────────┼──────────────┼─────────┤'));
+    }
+  });
   console.log(chalk.gray('└────────────┴──────┴───────────┴───────────┴─────────────┴──────────────┴─────────┘'));
 
   if (aiSymbols.length > 0) {
